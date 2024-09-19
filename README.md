@@ -4,13 +4,18 @@ This is not the library based on libnfc, but the uart communication with the PN5
 ## Usage
 Run the example script with the following command:
 ```bash
-python example.py
+cd script
+python pn532_cli_main.py
 ```
 
 ## Requirements
 - Python 3.5
 - pySerial
 - PN532 with USB Serial Chip (CH340, FT232RL, CP2102, etc.)
+
+## Credits
+[libnfc](https://github.com/nfc-tools/libnfc)  
+[Chameleon Ultra](https://github.com/RfidResearchGroup/ChameleonUltra)  
 
 ## License
 
