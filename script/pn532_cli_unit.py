@@ -20,7 +20,7 @@ from pn532_enum import MfcKeyType, MifareClassicPrngType
 
 from pn532_utils import CLITree
 
-from pn532_utils import ArgumentParserNoExit, ArgsParserError, UnexpectedResponseError, CR, C0
+from pn532_utils import ArgumentParserNoExit, ArgsParserError, CR, C0, CY
 
 
 import pn532_com
@@ -292,11 +292,81 @@ class HF14AScan(ReaderRequiredUnit):
     def on_exec(self, args: argparse.Namespace):
         self.scan()
 
+@hf_14a.command('raw')
+class HF14ARaw(ReaderRequiredUnit):
+    def bool_to_bit(self, value):
+        return 1 if value else 0
+    
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.formatter_class = argparse.RawDescriptionHelpFormatter
+        parser.description = 'Send raw command'
+        parser.add_argument('-a', '--activate-rf', help="Active signal field ON without select",
+                            action='store_true', default=False,)
+        parser.add_argument('-s', '--select-tag', help="Active signal field ON with select",
+                            action='store_true', default=False,)
+        #           help="Active signal field ON with ISO14443-3 select (no RATS)", action='store_true', default=False,)
+        parser.add_argument('-d', type=str, metavar="<hex>", help="Hex data to be sent")
+        parser.add_argument('-b', type=int, metavar="<dec>",
+                            help="Number of bits to send. Useful for send partial byte")
+        parser.add_argument('-c', '--crc', help="Calculate and append CRC", action='store_true', default=False,)
+        parser.add_argument('-r', '--no-response', help="Do not read response", action='store_true', default=False,)
+        parser.add_argument('-cc', '--crc-clear', help="Verify and clear CRC of received data",
+                            action='store_true', default=False,)
+        parser.add_argument('-k', '--keep-rf', help="Keep signal field ON after receive",
+                            action='store_true', default=False,)
+        parser.add_argument('-t', type=int, metavar="<dec>", help="Timeout in ms", default=100)
+        parser.epilog = parser.epilog = """
+examples/notes:
+  hf 14a raw -b 7 -d 40 -k
+  hf 14a raw -d 43 -k
+  hf 14a raw -d 3000 -c
+  hf 14a raw -sc -d 6000
+"""
+        return parser
+    def on_exec(self, args: argparse.Namespace):
+        options = {
+            'activate_rf_field': self.bool_to_bit(args.activate_rf),
+            'wait_response': self.bool_to_bit(not args.no_response),
+            'append_crc': self.bool_to_bit(args.crc),
+            'auto_select': self.bool_to_bit(args.select_tag),
+            'keep_rf_field': self.bool_to_bit(args.keep_rf),
+            'check_response_crc': self.bool_to_bit(args.crc_clear),
+            # 'auto_type3_select': self.bool_to_bit(args.type3-select-tag),
+        }
+        data: str = args.d
+        if data is not None:
+            data = data.replace(' ', '')
+            if re.match(r'^[0-9a-fA-F]+$', data):
+                if len(data) % 2 != 0:
+                    print(f" [!] {CR}The length of the data must be an integer multiple of 2.{C0}")
+                    return
+                else:
+                    data_bytes = bytes.fromhex(data)
+            else:
+                print(f" [!] {CR}The data must be a HEX string{C0}")
+                return
+        else:
+            data_bytes = []
+        if args.b is not None and args.crc:
+            print(f" [!] {CR}--bits and --crc are mutually exclusive{C0}")
+            return
+        resp = self.cmd.hf14a_raw(options, args.t, data_bytes, args.b)
+        if len(resp) > 0:
+            print(
+                # print head
+                " - " +
+                # print data
+                ' '.join([hex(byte).replace('0x', '').rjust(2, '0') for byte in resp])
+            )
+        else:
+            print(F" [*] {CY}No response{C0}")
+
 @hf_15.command('scan')
 class HF15Scan(ReaderRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
-        parser.description = 'Scan 14a tag, and print basic information'
+        parser.description = 'Scan ISO15693 tag, and print basic information'
         return parser
 
     def scan(self, deep=False):
