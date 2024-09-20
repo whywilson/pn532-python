@@ -9,9 +9,18 @@ import pn532_cli_unit
 import prompt_toolkit
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import FileHistory
-from pn532_utils import CR, CG, CY, C0
+from pn532_utils import CR, CG, CY, C0, CM
 import pn532_com
 
+# create by http://patorjk.com/software/taag/#p=display&f=ANSI%20Shadow&t=Chameleon%20Ultra
+BANNER = """
+██████╗ ███╗   ██╗███████╗██████╗ ██████╗ ██╗  ██╗██╗██╗     ██╗     ███████╗██████╗ 
+██╔══██╗████╗  ██║██╔════╝╚════██╗╚════██╗██║ ██╔╝██║██║     ██║     ██╔════╝██╔══██╗
+██████╔╝██╔██╗ ██║███████╗ █████╔╝ █████╔╝█████╔╝ ██║██║     ██║     █████╗  ██████╔╝
+██╔═══╝ ██║╚██╗██║╚════██║ ╚═══██╗██╔═══╝ ██╔═██╗ ██║██║     ██║     ██╔══╝  ██╔══██╗
+██║     ██║ ╚████║███████║██████╔╝███████╗██║  ██╗██║███████╗███████╗███████╗██║  ██║
+╚═╝     ╚═╝  ╚═══╝╚══════╝╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝
+"""
 
 class Pn532CLI:
     def __init__(self):
@@ -110,6 +119,15 @@ class Pn532CLI:
         device_name = self.device_com.get_device_name()
         status = f"[{device_string}{C0}] {device_name} --> "
         return status
+    
+    @staticmethod
+    def print_banner():
+        """
+            print chameleon ascii banner.
+
+        :return:
+        """
+        print(f"{CM}{BANNER}{C0}")
             
     def startCLI(self):
         self.completer = pn532_utils.CustomNestedCompleter.from_clitree(pn532_cli_unit.root)
@@ -117,6 +135,7 @@ class Pn532CLI:
                                                     history=FileHistory(str(pathlib.Path.home() /
                                                                             ".pn532_history")))
 
+        self.print_banner()
         cmd_strs = []
         cmd_str = ''
         while True:

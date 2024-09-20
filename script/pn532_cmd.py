@@ -100,13 +100,7 @@ class Pn532CMD:
         return self.device.send_cmd_sync(Command.CHANGE_DEVICE_MODE, data)
 
     def set_device_reader_mode(self, reader_mode: bool = True):
-        """
-            Change device mode, reader or tag.
-
-        :param reader_mode: True if reader mode, False if tag mode.
-        :return:
-        """
-        self.change_device_mode(reader_mode)
+        self.device
 
     @expect_response(Status.SUCCESS)
     def hf14a_scan(self):
@@ -1473,11 +1467,11 @@ def test_fn():
                 resp_timeout_ms=1000,
                 data=block0,
             )
+            print(f"Write block 0: {bytes(resp).hex().upper()}")
             if len(resp) > 0 and resp[0] == 0x0A:
                 print("Write Done")
             else:
                 print("Write fail")
-                raise
         else:
             print("Not Gen1a")
     except Exception as e:

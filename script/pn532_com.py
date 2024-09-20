@@ -119,6 +119,11 @@ class Pn532Com:
         response = self.send_cmd_sync(Command.SAMConfiguration, b'\x01')
         return response
     
+    # PN532Killer
+    def set_work_mode(self, mode = 1, type = 1, index = 0) -> response:
+        response = self.send_cmd_sync(Command.SetWorkMode, [mode, type, index])
+        return response
+    
     def reset_register(self) -> response:
         response = self.send_cmd_sync(Command.WriteRegister, [0x63, 0x02, 0x00, 0x63, 0x03, 0x00])
         return response

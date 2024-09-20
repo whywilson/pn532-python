@@ -58,6 +58,7 @@ def check_tools():
 
 root = CLITree(root=True)
 hw = root.subgroup("hw", "Hardware-related commands")
+hw_mode = hw.subgroup("mode", "Mode-related commands")
 hf = root.subgroup("hf", "High-frequency commands")
 hf_14a = hf.subgroup("14a", "ISO 14443-A commands")
 hf_mf = hf.subgroup("mf", "MIFARE Classic commands")
@@ -68,7 +69,6 @@ hf_15 = hf.subgroup("15", "ISO 15693 commands")
 lf = root.subgroup("lf", "Low Frequency commands")
 lf_em = lf.subgroup("em", "EM commands")
 lf_em_410x = lf_em.subgroup("410x", "EM410x commands")
-
 
 class BaseCLIUnit:
     def __init__(self):
@@ -181,7 +181,6 @@ class BaseCLIUnit:
 
         return ShadowProcess()
 
-
 class DeviceRequiredUnit(BaseCLIUnit):
     """
     Make sure of device online
@@ -195,7 +194,6 @@ class DeviceRequiredUnit(BaseCLIUnit):
             print("Please connect to pn532 device first(use 'hw connect').")
             return False
 
-
 class ReaderRequiredUnit(DeviceRequiredUnit):
     """
     Make sure of device enter to reader mode.
@@ -208,10 +206,9 @@ class ReaderRequiredUnit(DeviceRequiredUnit):
                 return True
             else:
                 self.cmd.set_device_reader_mode(True)
-                print("Switch to {  Tag Reader  } mode successfully.")
+                print("Switch to {  Reader  } mode successfully.")
                 return True
         return False
-
 
 class MF1SetUidArgsUnit(ReaderRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -265,7 +262,6 @@ class MF1AuthArgsUnit(ReaderRequiredUnit):
 
         return Param()
 
-
 @root.command("clear")
 class RootClear(BaseCLIUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -276,7 +272,46 @@ class RootClear(BaseCLIUnit):
     def on_exec(self, args: argparse.Namespace):
         os.system("clear" if os.name == "posix" else "cls")
 
+@hw_mode.command("r")
+class HWModeReader(ReaderRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set device to reader mode"
+        return parser
 
+    def on_exec(self, args: argparse.Namespace):
+        self.device_com.set_work_mode()
+        print("Switch to {  Tag Reader  } mode successfully.")
+        
+@hw_mode.command("e")
+class HWModeEmulator(ReaderRequiredUnit):
+    # support -type m14b1k, 15693, em4100 and -slot 1-8
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set device to emulator mode"
+        parser.add_argument("-t", "--type", default=1, type=int, required=False, help="1 - 4B1K, 3 - 15693, 4 - EM4100")
+        parser.add_argument("-s", "--slot", default=1, type=int, required=False, help="Emulator slot")
+        return parser
+        
+    def on_exec(self, args: argparse.Namespace):
+        type = args.type
+        slot = args.slot
+        self.device_com.set_work_mode(2, type, slot - 1)
+        print("Switch to {  Emulator  } mode successfully.")
+
+@hw_mode.command("s")
+class HWModeEmulator(ReaderRequiredUnit):
+    # support -type for 14a with tag, 14a without tag, 15
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set device to sniffer mode"
+        parser.add_argument("-t", "--type", default=0, type=int, required=False, help="0 - Without tag, 1 - With tag")
+        return parser
+    
+    def on_exec(self, args: argparse.Namespace):
+        self.device_com.set_work_mode(3, 1, args.type)
+        print("Switch to {  Sniffer  } mode successfully.")        
+    
 @hf_14a.command("scan")
 class HF14AScan(ReaderRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -323,7 +358,6 @@ class HF14AScan(ReaderRequiredUnit):
 
     def on_exec(self, args: argparse.Namespace):
         self.scan()
-
 
 @hf_14a.command("raw")
 class HF14ARaw(ReaderRequiredUnit):
@@ -680,10 +714,7 @@ examples:
                 resp_timeout_ms=1000,
                 data=block0,
             )
-            if len(resp) > 0 and resp[0] == 0x0A:
-                print("Write done")
-            else:
-                print("Write fail")
+            print("Write done")
         else:
             print("Not Gen1A")
 

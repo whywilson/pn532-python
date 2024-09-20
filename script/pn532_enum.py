@@ -31,6 +31,7 @@ class Command(enum.IntEnum):
     InAutoPoll = 0x60
     
     checkPn532Killer = 0xAA
+    SetWorkMode = 0xAC
 
 @enum.unique
 class Status(enum.IntEnum):
