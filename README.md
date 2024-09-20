@@ -1,5 +1,8 @@
-All-in-one PN532 comes with buit-in CH340 USB Serial chip and PN532 chip. This is a simple Python script that demonstrates how to read NFC tags using the PN532 chip. The script uses the pySerial library to communicate with the PN532 chip over a serial connection. 
-This is not the library based on libnfc, but the uart communication with the PN532 chip.
+A Python-based CLI for PN532 and PN532Killer.
+
+## Hardware
+- PN532 with USB Serial Chip on HSU Mode
+- [PN532Killer](https://pn532killer.com) 
 
 ## Usage
 Run the example script with the following command:
@@ -11,11 +14,19 @@ python pn532_cli_main.py
 ## Requirements
 - Python 3.5
 - pySerial
-- PN532 with USB Serial Chip (CH340, FT232RL, CP2102, etc.)
+
+## Protocols
+### PN532
+- [ISO14443A](https://www.nxp.com/docs/en/user-guide/141520.pdf)
+### PN532Killer
+- [ISO14443](https://pn532killer.com)
+- [ISO15693](https://pn532killer.com)
+- [EM4100](https://pn532killer.com)
 
 ## Credits
 [libnfc](https://github.com/nfc-tools/libnfc)  
-[Chameleon Ultra](https://github.com/RfidResearchGroup/ChameleonUltra)  
+[Proxmark3](https://github.com/RfidResearchGroup/proxmark3)   
+[Chameleon Ultra](https://github.com/RfidResearchGroup/ChameleonUltra)   
 
 ## License
 

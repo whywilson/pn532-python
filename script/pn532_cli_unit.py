@@ -16,7 +16,7 @@ from typing import Union
 from pathlib import Path
 from platform import uname
 from datetime import datetime
-from pn532_enum import MfcKeyType, MifareClassicPrngType
+from pn532_enum import MfcKeyType, MifareClassicPrngType, Command
 
 from pn532_utils import CLITree
 
@@ -216,7 +216,7 @@ class ReaderRequiredUnit(DeviceRequiredUnit):
 class MF1SetUidArgsUnit(ReaderRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
-        parser.add_argument("-u", "--uid", type=str, required=True, help="UID to set")
+        parser.add_argument("-u", type=str, required=True, help="UID to set")
         return parser
 
     def get_param(self, args):
@@ -224,7 +224,6 @@ class MF1SetUidArgsUnit(ReaderRequiredUnit):
         if len(uid) != 14 or len(uid) != 8:
             raise ArgsParserError("UID must be 4 or 7 bytes long")
         return uid
-
 
 class MF1AuthArgsUnit(ReaderRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -552,10 +551,9 @@ class HwVersion(ReaderRequiredUnit):
 
 
 @hf_mf.command("setuid")
-class HfMfSetUid():
-
-    def before_exec(self, args: argparse.Namespace):
-        return True
+class HfMfSetUid(ReaderRequiredUnit):
+    # def before_exec(self, args: argparse.Namespace):
+    #     return True
 
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
@@ -563,56 +561,57 @@ class HfMfSetUid():
         parser.description = "Set UID of a Magic Mifare Classic with a specific UID or block0.\nSupports on Gen1A, Gen2, Gen3 and Gen4."
         parser.add_argument(
             "-u",
-            "--uid",
             type=str,
+            metavar="<hex>",
             required=False,
-            help="UID to set(Default 11223344)",
+            help="UID to set (Default 11223344)",
             default="11223344",
         )
         # add block data, 16 bytes
-        parser.add_argument("-block0", type=str, required=False, help="Block 0 data")
+        parser.add_argument("-b", metavar="<hex>", type=str, required=False, help="Block 0 (16 bytes)")
         parser.add_argument(
             "-g",
-            "--gen",
             type=int,
+            metavar="<dec>",
             required=False,
-            help="Generation: 1 => Gen1A(Defalt), 2 => cuid, 3 => Gen3, 4 => Gen4",
+            help="Generation: 1 => Gen1A (Default), 2 => cuid, 3 => Gen3, 4 => Gen4",
             default=1,
         )
         parser.add_argument(
-            "--pwd",
+            "-p",
             type=str,
+            metavar="<hex>",
             required=False,
-            help="Gen4 Password(Default 00000000)",
+            help="Gen4 Password (Default 00000000)",
         )
         parser.epilog = (
             parser.epilog
         ) = """
-examples/notes:
+examples:
   hf mf setuid -u 11223344
   hf mf setuid -u 11223344 -g 2
   hf mf setuid -block0 1122334444080400aabbccddeeff1122 -g 3
-  hf mf setuid -block0 1122334444080400aabbccddeeff1122 -g 4 --pwd aabbccdd
+  hf mf setuid -block0 1122334444080400aabbccddeeff1122 -g 4 --pwd 00000000
 """
         return parser
 
     def str_to_bytes(self, data):
         try:
-            # 移除字符串中的空格
             data = data.replace(" ", "")
-            # 将十六进制字符串转换为字节
             return bytes.fromhex(data)
         except ValueError:
             raise ValueError("Not valid hex")
 
-    def on_exec(self, args: argparse.Namespace):
+    def is_hex(self, hex_string):
+        return all(c in "0123456789abcdefABCDEF" for c in hex_string)
+
+    def get_block0(self, args):
         sak = 0x08
         atqa = 0x0400
         factory_info = 0xaabbccddeeff0011
-        uid = self.str_to_bytes(args.uid)
-        block0 = args.block0
+        uid = self.str_to_bytes(args.u)
+        block0 = args.b
         if(block0 == None):
-            # if uid length != 8 or 14, exist
             if len(uid) != 4 and len(uid) != 7:
                 print(f"{CR}UID needs to be 4 bytes or 7 bytes{C0}")
                 return
@@ -622,6 +621,9 @@ examples/notes:
             uid_hex = ''.join(format(x, '02x') for x in uid)
             block0 = f"{uid_hex}{format(bcc, '02x')}{format(sak, '02x')}{format(atqa, '04x')}{format(factory_info, '016x')}"
         else:
+            if self.is_hex(block0) == False:
+                print(f"{CR}Block0 needs to be hex{C0}")
+                return
             if len(block0) != 32:
                 print(f"{CR}Block0 needs to be 16 bytes{C0}")
                 return
@@ -630,13 +632,83 @@ examples/notes:
             bcc = 0
             bcc = uid[0] ^ uid[1] ^ uid[2] ^ uid[3]
             # check if bcc is valid on the block0
-            if bcc.hex() != block0[8:10]:
+            if  block0[8:10] != format(bcc, '02x'):
                 print(f"{CR}Invalid BCC{C0}")
                 return
-        print("Block 0", block0)
+        return self.str_to_bytes(block0)
 
-    def after_exec(self, args: argparse.Namespace):
-        print("after_exec: ", args)
+    def gen1a_set_block0(self, block0: bytes):
+        tag_info = {}
+
+        resp = self.cmd.hf14a_scan()
+        if resp == None:
+            print("No tag found")
+            return resp
+        # print("Tag found", resp)
+        tag_info["uid"] = resp[0]["uid"].hex()
+        tag_info["atqa"] = resp[0]["atqa"].hex()
+        tag_info["sak"] = resp[0]["sak"].hex()
+        tag_info["data"] = []
+        options = {
+            "activate_rf_field": 1,
+            "wait_response": 1,
+            "append_crc": 0,
+            "auto_select": 0,
+            "keep_rf_field": 1,
+            "check_response_crc": 0,
+        }
+
+        if(self.cmd.isGen1a()):
+            print("Found Gen1A:", f"{tag_info['uid'].upper()}")
+            options = {
+                "activate_rf_field": 1,
+                "wait_response": 1,
+                "append_crc": 1,
+                "auto_select": 0,
+                "keep_rf_field": 1,
+                "check_response_crc": 0,
+            }
+            resp = self.cmd.hf14a_raw(
+                options=options,
+                resp_timeout_ms=1000,
+                data=[Command.MfWriteBlock, 0],
+            )
+            print(f"Writing block 0: {block0.hex().upper()}")
+            options["keep_rf_field"] = 0
+            resp = self.cmd.hf14a_raw(
+                options=options,
+                resp_timeout_ms=1000,
+                data=block0,
+            )
+            if len(resp) > 0 and resp[0] == 0x0A:
+                print("Write done")
+            else:
+                print("Write fail")
+        else:
+            print("Not Gen1A")
+
+    def gen2_set_block0(self, block0: bytes):
+        pass
+
+    def gen3_set_block0(self, block0: bytes):
+        pass
+
+    def gen4_set_block0(self, block0: bytes, pwd: str):
+        pass
+
+    def on_exec(self, args: argparse.Namespace):
+        block0 = self.get_block0(args)
+        if block0 == None:
+            return
+        gen = args.g
+        if gen == 1:
+            self.gen1a_set_block0(block0)
+        elif gen == 2:
+            self.gen2_set_block0(block0)
+        elif gen == 3:
+            self.gen3_set_block0(block0)
+        elif gen == 4:
+            self.gen4_set_block0(block0, pwd = args.p)
 
 @hf_mf.command("cview")
 class HfMfCview(DeviceRequiredUnit):

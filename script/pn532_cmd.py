@@ -3,19 +3,29 @@ import ctypes
 from typing import Union
 
 import pn532_com
-from pn532_com import Response
+from pn532_com import Response, DEBUG
 from pn532_utils import expect_response
 from pn532_enum import Command, SlotNumber, Status, TagSenseType, TagSpecificType
 from pn532_enum import ButtonPressFunction, ButtonType, MifareClassicDarksideStatus
 from pn532_enum import MfcKeyType, MfcValueBlockOperator
 from time import sleep
 from pn532_utils import CC, CB, CG, C0, CY, CR
+import os
+import subprocess
+import argparse
+import timeit
+from multiprocessing import Pool, cpu_count
+from typing import Union
+from pathlib import Path
+from platform import uname
+import serial.tools.list_ports
 
 CURRENT_VERSION_SETTINGS = 5
 
+
 class Pn532CMD:
     """
-        Pn532 cmd function
+    Pn532 cmd function
     """
 
     def __init__(self, pn532: pn532_com.Pn532Com):
@@ -27,22 +37,23 @@ class Pn532CMD:
     @expect_response(Status.SUCCESS)
     def get_app_version(self):
         """
-            Get firmware version number(application)
+        Get firmware version number(application)
         """
         resp = self.device.send_cmd_sync(Command.GET_APP_VERSION)
         if resp.status == Status.SUCCESS:
-            resp.parsed = struct.unpack('!BB', resp.data)
+            resp.parsed = struct.unpack("!BB", resp.data)
         # older protocol, must upgrade!
-        if resp.status == 0 and resp.data == b'\x00\x01':
+        if resp.status == 0 and resp.data == b"\x00\x01":
             print("Pn532 does not understand new protocol. Please update firmware")
-            return pn532_com.Response(cmd=Command.GET_APP_VERSION,
-                                          status=Status.NOT_IMPLEMENTED)
+            return pn532_com.Response(
+                cmd=Command.GET_APP_VERSION, status=Status.NOT_IMPLEMENTED
+            )
         return resp
 
     @expect_response(Status.SUCCESS)
     def get_device_chip_id(self):
         """
-            Get device chip id
+        Get device chip id
         """
         resp = self.device.send_cmd_sync(Command.GET_DEVICE_CHIP_ID)
         if resp.status == Status.SUCCESS:
@@ -52,7 +63,7 @@ class Pn532CMD:
     @expect_response(Status.SUCCESS)
     def get_device_address(self):
         """
-            Get device address
+        Get device address
         """
         resp = self.device.send_cmd_sync(Command.GET_DEVICE_ADDRESS)
         if resp.status == Status.SUCCESS:
@@ -63,14 +74,14 @@ class Pn532CMD:
     def get_git_version(self):
         resp = self.device.send_cmd_sync(Command.GET_GIT_VERSION)
         if resp.status == Status.SUCCESS:
-            resp.parsed = resp.data.decode('utf-8')
+            resp.parsed = resp.data.decode("utf-8")
         return resp
 
     @expect_response(Status.SUCCESS)
     def get_device_mode(self):
         resp = self.device.send_cmd_sync(Command.GET_DEVICE_MODE)
         if resp.status == Status.SUCCESS:
-            resp.parsed, = struct.unpack('!?', resp.data)
+            (resp.parsed,) = struct.unpack("!?", resp.data)
         return resp
 
     def is_device_reader_mode(self) -> bool:
@@ -85,7 +96,7 @@ class Pn532CMD:
     # Note: Will return NOT_IMPLEMENTED if one tries to set reader mode on Lite
     @expect_response(Status.SUCCESS)
     def change_device_mode(self, mode):
-        data = struct.pack('!B', mode)
+        data = struct.pack("!B", mode)
         return self.device.send_cmd_sync(Command.CHANGE_DEVICE_MODE, data)
 
     def set_device_reader_mode(self, reader_mode: bool = True):
@@ -99,13 +110,13 @@ class Pn532CMD:
 
     @expect_response(Status.SUCCESS)
     def hf14a_scan(self):
-        # self.device.set_normal_mode()
+        self.device.set_normal_mode()
         """
         14a tags in the scanning field.
 
         :return:
         """
-        resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b'\x01\x00')
+        resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b"\x01\x00")
         # print("response status = ", resp.status)
         if resp.status == Status.SUCCESS:
             # tagType[1]tagNum[1]atqa[2]sak[1]uidlen[1]uid[uidlen]
@@ -116,15 +127,23 @@ class Pn532CMD:
                 offset += 1
                 tagNum = resp.data[offset]
                 offset += 1
-                atqa, sak, uidlen = struct.unpack_from('!2s1sB', resp.data, offset)
-                offset += struct.calcsize('!2s1sB')
-                uid = resp.data[offset:offset + uidlen]
+                atqa, sak, uidlen = struct.unpack_from("!2s1sB", resp.data, offset)
+                offset += struct.calcsize("!2s1sB")
+                uid = resp.data[offset : offset + uidlen]
                 offset += uidlen
-                data.append({'tagType': tagType, 'tagNum': tagNum, 'atqa': atqa, 'sak': sak, 'uid': uid})
+                data.append(
+                    {
+                        "tagType": tagType,
+                        "tagNum": tagNum,
+                        "atqa": atqa,
+                        "sak": sak,
+                        "uid": uid,
+                    }
+                )
             resp.parsed = data
         self.device.halt()
         return resp
-    
+
     @expect_response(Status.SUCCESS)
     def hfmf_cview(self):
         """
@@ -133,58 +152,70 @@ class Pn532CMD:
         :return:
         """
         self.device.set_normal_mode()
-        
+
         tag_info = {}
-        
+
         resp = self.hf14a_scan()
         if resp == None:
             print("No tag found")
             return resp
         # print("Tag found", resp)
-        tag_info['uid'] = resp[0]['uid'].hex()
-        tag_info['atqa'] = resp[0]['atqa'].hex()
-        tag_info['sak'] = resp[0]['sak'].hex()
-        tag_info['data'] = []
+        tag_info["uid"] = resp[0]["uid"].hex()
+        tag_info["atqa"] = resp[0]["atqa"].hex()
+        tag_info["sak"] = resp[0]["sak"].hex()
+        tag_info["data"] = []
         options = {
-            'activate_rf_field': 1,
-            'wait_response': 1,
-            'append_crc': 0,
-            'auto_select': 0,
-            'keep_rf_field': 1,
-            'check_response_crc': 0,
+            "activate_rf_field": 1,
+            "wait_response": 1,
+            "append_crc": 0,
+            "auto_select": 0,
+            "keep_rf_field": 1,
+            "check_response_crc": 0,
         }
         try:
             # unlock 1
-            resp = self.hf14a_raw(options=options, resp_timeout_ms=1000, data=[0x40], bitlen=7)
-            if resp[0] == 0x0a:
+            resp = self.hf14a_raw(
+                options=options, resp_timeout_ms=1000, data=[0x40], bitlen=7
+            )
+            if resp[0] == 0x0A:
                 print("Gen1A unlock 1 success")
                 # unlock 2
-                resp = self.hf14a_raw(options=options, resp_timeout_ms=1000, data=[0x43])
-                if resp[0] == 0x0a:
+                resp = self.hf14a_raw(
+                    options=options, resp_timeout_ms=1000, data=[0x43]
+                )
+                if resp[0] == 0x0A:
                     print("Gen1A unlock 2 success")
                     print("Start dump Gen1A tag")
                     # Transfer with crc
-                    options['append_crc'] = 1
-                    options['check_response_crc'] = 1
+                    options["append_crc"] = 1
+                    options["check_response_crc"] = 1
                     block = 0
                     block_data = {}
                     while block < 64:
                         # Tag read block cmd
                         # resp = cml.device.read_mifare_block(block)
                         if block == 63:
-                            options['keep_rf_field'] = 0
-                        resp = self.hf14a_raw(options=options, resp_timeout_ms=1000, data=[Command.MfReadBlock, block])
+                            options["keep_rf_field"] = 0
+                        resp = self.hf14a_raw(
+                            options=options,
+                            resp_timeout_ms=1000,
+                            data=[Command.MfReadBlock, block],
+                        )
                         block_data[f"{block}"] = resp.hex()
                         # print block index with padding 2 spaces
                         # print(f"block {block:02d}: {resp.hex().upper()}")
                         if block == 0:
-                            print(f"block {block:02d}: {CY}{resp.hex()[0:8].upper()}{CR}{resp.hex()[8:10].upper()}{CG}{resp.hex()[10:14].upper()}{C0}{resp.hex()[14:].upper()}{C0}")
+                            print(
+                                f"block {block:02d}: {CY}{resp.hex()[0:8].upper()}{CR}{resp.hex()[8:10].upper()}{CG}{resp.hex()[10:14].upper()}{C0}{resp.hex()[14:].upper()}{C0}"
+                            )
                         elif block % 4 == 3:
-                            print(f"block {block:02d}: {CG}{resp.hex()[0:12].upper()}{CR}{resp.hex()[12:20].upper()}{CG}{resp.hex()[20:].upper()}{C0}")
+                            print(
+                                f"block {block:02d}: {CG}{resp.hex()[0:12].upper()}{CR}{resp.hex()[12:20].upper()}{CG}{resp.hex()[20:].upper()}{C0}"
+                            )
                         else:
                             print(f"block {block:02d}: {resp.hex().upper()}")
                         block += 1
-                    tag_info['blocks'] = block_data
+                    tag_info["blocks"] = block_data
                 else:
                     print("Gen1A unlock 2 fail")
                     raise
@@ -192,15 +223,15 @@ class Pn532CMD:
                 print("Gen1A unlock 1 fail")
                 raise
         except Exception:
-            options['keep_rf_field'] = 0
-            options['wait_response'] = 0
-        
+            options["keep_rf_field"] = 0
+            options["wait_response"] = 0
+
         resp = Response(Command.InCommunicateThru, Status.SUCCESS)
         resp.parsed = tag_info
         return resp
-    
+
     @expect_response(Status.HF_TAG_OK)
-    def hf14a_raw(self, options, resp_timeout_ms=100, data=[], bitlen=None):
+    def hf14a_raw(self, options, resp_timeout_ms=100, data=[], bitlen=None) -> Response:
         """
         Send raw cmd to 14a tag.
 
@@ -223,44 +254,46 @@ class Pn532CMD:
             ]
 
         cs = CStruct()
-        cs.activate_rf_field = options['activate_rf_field']
-        cs.wait_response = options['wait_response']
-        cs.append_crc = options['append_crc']
-        cs.auto_select = options['auto_select']
-        cs.keep_rf_field = options['keep_rf_field']
-        cs.check_response_crc = options['check_response_crc']
+        cs.activate_rf_field = options["activate_rf_field"]
+        cs.wait_response = options["wait_response"]
+        cs.append_crc = options["append_crc"]
+        cs.auto_select = options["auto_select"]
+        cs.keep_rf_field = options["keep_rf_field"]
+        cs.check_response_crc = options["check_response_crc"]
 
         if bitlen is None:
             bitlen = len(data) * 8  # bits = bytes * 8(bit)
         else:
             if len(data) == 0:
-                raise ValueError(f'bitlen={bitlen} but missing data')
+                raise ValueError(f"bitlen={bitlen} but missing data")
             if not ((len(data) - 1) * 8 < bitlen <= len(data) * 8):
-                raise ValueError(f'bitlen={bitlen} incompatible with provided data ({len(data)} bytes), '
-                                 f'must be between {((len(data) - 1) * 8 )+1} and {len(data) * 8} included')
-            
+                raise ValueError(
+                    f"bitlen={bitlen} incompatible with provided data ({len(data)} bytes), "
+                    f"must be between {((len(data) - 1) * 8 )+1} and {len(data) * 8} included"
+                )
+
         if bitlen == 7:
-            self.device.set_register([0x63, 0x3D, 0X07])
+            self.device.set_register([0x63, 0x3D, 0x07])
             sleep(0.1)
 
-        # data = bytes(cs)+struct.pack(f'!HH{len(data)}s', resp_timeout_ms, bitlen, bytearray(data))
         if cs.append_crc:
             data = bytes(data) + self.crc16A(bytes(data))
-        # if(DEBUG):
-        #     print(data)
-        
-        resp = self.device.send_cmd_sync(Command.InCommunicateThru, data, timeout= 1)
+        resp = self.device.send_cmd_sync(Command.InCommunicateThru, data, timeout=1)
         resp.parsed = resp.data[1:]
-        resp.status = resp.data[0]
-        
-        if bitlen == 7:
-            self.device.set_register([0x63, 0x3D, 0X00])
-            sleep(0.1)
-            
+        resp.status = resp.data[0:1]
         if cs.keep_rf_field == 0:
-            self.device.set_normal_mode()
+            self.device.halt()
+
+        if bitlen == 7:
+            self.device.set_register([0x63, 0x3D, 0x00])
+            sleep(0.1)
+
+        if DEBUG:
+            print(
+                f"Send: {bytes(data).hex().upper()} Status: {resp.status.hex().upper()}, Data: {resp.parsed.hex().upper()}"
+            )
         return resp
-    
+
     def crc16A(self, data: bytes) -> bytes:
         crc = 0x6363  # Initial value for CRC-A
 
@@ -270,7 +303,27 @@ class Pn532CMD:
             crc = (crc >> 8) ^ (ch << 8) ^ (ch << 3) ^ (ch >> 4)
 
         crc = crc & 0xFFFF
-        return crc.to_bytes(2, byteorder='little')
+        return crc.to_bytes(2, byteorder="little")
+
+    def isGen1a(self):
+        options = {
+            "activate_rf_field": 1,
+            "wait_response": 1,
+            "append_crc": 0,
+            "auto_select": 0,
+            "keep_rf_field": 1,
+            "check_response_crc": 0,
+        }
+        # Unlock 1
+        resp = self.hf14a_raw(
+            options=options, resp_timeout_ms=1000, data=[0x40], bitlen=7
+        )
+        if resp[0] == 0x0A:
+            # Unlock 2
+            resp = self.hf14a_raw(options=options, resp_timeout_ms=1000, data=[0x43])
+            if resp[0] == 0x0A:
+                return True
+        return False
 
     @expect_response(Status.SUCCESS)
     def hf15_scan(self):
@@ -280,7 +333,7 @@ class Pn532CMD:
 
         :return:
         """
-        resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b'\x01\x05')
+        resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b"\x01\x05")
         if resp.status == Status.SUCCESS:
             # 010188888888332211E0
             # tagType[1]tagNum[1]uid[8, reversed]
@@ -291,12 +344,20 @@ class Pn532CMD:
                 offset += 1
                 tagNum = resp.data[offset]
                 offset += 1
-                uid = resp.data[offset:offset + 8]
+                uid = resp.data[offset : offset + 8]
                 offset += 8
                 # reversed uid
                 uidHex = uid.hex()
-                uidHex = uidHex[12:14] + uidHex[10:12] + uidHex[8:10] + uidHex[6:8] + uidHex[4:6] + uidHex[2:4] + uidHex[0:2]
-                data.append({'tagType': tagType, 'tagNum': tagNum, 'uid': uidHex})
+                uidHex = (
+                    uidHex[12:14]
+                    + uidHex[10:12]
+                    + uidHex[8:10]
+                    + uidHex[6:8]
+                    + uidHex[4:6]
+                    + uidHex[2:4]
+                    + uidHex[0:2]
+                )
+                data.append({"tagType": tagType, "tagNum": tagNum, "uid": uidHex})
             resp.parsed = data
         return resp
 
@@ -328,28 +389,36 @@ class Pn532CMD:
 
         :return:
         """
-        data = struct.pack('!BB6s', type_known, block_known, key_known)
+        data = struct.pack("!BB6s", type_known, block_known, key_known)
         resp = self.device.send_cmd_sync(Command.MF1_DETECT_NT_DIST, data)
         if resp.status == Status.HF_TAG_OK:
-            uid, dist = struct.unpack('!II', resp.data)
-            resp.parsed = {'uid': uid, 'dist': dist}
+            uid, dist = struct.unpack("!II", resp.data)
+            resp.parsed = {"uid": uid, "dist": dist}
         return resp
 
     @expect_response(Status.HF_TAG_OK)
-    def mf1_nested_acquire(self, block_known, type_known, key_known, block_target, type_target):
+    def mf1_nested_acquire(
+        self, block_known, type_known, key_known, block_target, type_target
+    ):
         """
         Collect the key NT parameters needed for Nested decryption
         :return:
         """
-        data = struct.pack('!BB6sBB', type_known, block_known, key_known, type_target, block_target)
+        data = struct.pack(
+            "!BB6sBB", type_known, block_known, key_known, type_target, block_target
+        )
         resp = self.device.send_cmd_sync(Command.MF1_NESTED_ACQUIRE, data)
         if resp.status == Status.HF_TAG_OK:
-            resp.parsed = [{'nt': nt, 'nt_enc': nt_enc, 'par': par}
-                           for nt, nt_enc, par in struct.iter_unpack('!IIB', resp.data)]
+            resp.parsed = [
+                {"nt": nt, "nt_enc": nt_enc, "par": par}
+                for nt, nt_enc, par in struct.iter_unpack("!IIB", resp.data)
+            ]
         return resp
 
     @expect_response(Status.HF_TAG_OK)
-    def mf1_darkside_acquire(self, block_target, type_target, first_recover: Union[int, bool], sync_max):
+    def mf1_darkside_acquire(
+        self, block_target, type_target, first_recover: Union[int, bool], sync_max
+    ):
         """
         Collect the key parameters needed for Darkside decryption.
 
@@ -359,12 +428,26 @@ class Pn532CMD:
         :param sync_max:
         :return:
         """
-        data = struct.pack('!BBBB', type_target, block_target, first_recover, sync_max)
-        resp = self.device.send_cmd_sync(Command.MF1_DARKSIDE_ACQUIRE, data, timeout=sync_max * 10)
+        data = struct.pack("!BBBB", type_target, block_target, first_recover, sync_max)
+        resp = self.device.send_cmd_sync(
+            Command.MF1_DARKSIDE_ACQUIRE, data, timeout=sync_max * 10
+        )
         if resp.status == Status.HF_TAG_OK:
             if resp.data[0] == MifareClassicDarksideStatus.OK:
-                darkside_status, uid, nt1, par, ks1, nr, ar = struct.unpack('!BIIQQII', resp.data)
-                resp.parsed = (darkside_status, {'uid': uid, 'nt1': nt1, 'par': par, 'ks1': ks1, 'nr': nr, 'ar': ar})
+                darkside_status, uid, nt1, par, ks1, nr, ar = struct.unpack(
+                    "!BIIQQII", resp.data
+                )
+                resp.parsed = (
+                    darkside_status,
+                    {
+                        "uid": uid,
+                        "nt1": nt1,
+                        "par": par,
+                        "ks1": ks1,
+                        "nr": nr,
+                        "ar": ar,
+                    },
+                )
             else:
                 resp.parsed = (resp.data[0],)
         return resp
@@ -379,7 +462,7 @@ class Pn532CMD:
         :param key:
         :return:
         """
-        data = struct.pack('!BB6s', type_value, block, key)
+        data = struct.pack("!BB6s", type_value, block, key)
         resp = self.device.send_cmd_sync(Command.MF1_AUTH_ONE_KEY_BLOCK, data)
         resp.parsed = resp.status == Status.HF_TAG_OK
         return resp
@@ -394,7 +477,7 @@ class Pn532CMD:
         :param key:
         :return:
         """
-        data = struct.pack('!BB6s', type_value, block, key)
+        data = struct.pack("!BB6s", type_value, block, key)
         resp = self.device.send_cmd_sync(Command.MF1_READ_ONE_BLOCK, data)
         resp.parsed = resp.data
         return resp
@@ -410,13 +493,23 @@ class Pn532CMD:
         :param block_data:
         :return:
         """
-        data = struct.pack('!BB6s16s', type_value, block, key, block_data)
+        data = struct.pack("!BB6s16s", type_value, block, key, block_data)
         resp = self.device.send_cmd_sync(Command.MF1_WRITE_ONE_BLOCK, data)
         resp.parsed = resp.status == Status.HF_TAG_OK
         return resp
 
     @expect_response(Status.HF_TAG_OK)
-    def mf1_manipulate_value_block(self, src_block, src_type: MfcKeyType, src_key, operator: MfcValueBlockOperator, operand, dst_block, dst_type: MfcKeyType, dst_key):
+    def mf1_manipulate_value_block(
+        self,
+        src_block,
+        src_type: MfcKeyType,
+        src_key,
+        operator: MfcValueBlockOperator,
+        operand,
+        dst_block,
+        dst_type: MfcKeyType,
+        dst_key,
+    ):
         """
         1. Increment: increments value from source block and write to dest block
         2. Decrement: decrements value from source block and write to dest block
@@ -433,7 +526,17 @@ class Pn532CMD:
         :param dst_key:
         :return:
         """
-        data = struct.pack('!BB6sBiBB6s', src_type, src_block, src_key, operator, operand, dst_type, dst_block, dst_key)
+        data = struct.pack(
+            "!BB6sBiBB6s",
+            src_type,
+            src_block,
+            src_key,
+            operator,
+            operand,
+            dst_type,
+            dst_block,
+            dst_key,
+        )
         resp = self.device.send_cmd_sync(Command.MF1_MANIPULATE_VALUE_BLOCK, data)
         resp.parsed = resp.status == Status.HF_TAG_OK
         return resp
@@ -448,52 +551,62 @@ class Pn532CMD:
             raise ValueError("len(mask) should be 10")
         if len(keys) < 1 or len(keys) > 83:
             raise ValueError("Invalid len(keys)")
-        data = struct.pack(f'!10s{6*len(keys)}s', mask, b''.join(keys))
+        data = struct.pack(f"!10s{6*len(keys)}s", mask, b"".join(keys))
 
-        bitsCnt = 80 # maximum sectorKey_to_be_checked
+        bitsCnt = 80  # maximum sectorKey_to_be_checked
         for b in mask:
             while b > 0:
                 [bitsCnt, b] = [bitsCnt - (b & 0b1), b >> 1]
         if bitsCnt < 1:
             # All sectorKey is masked
             return pn532_com.Response(
-                cmd=Command.MF1_CHECK_KEYS_OF_SECTORS, 
+                cmd=Command.MF1_CHECK_KEYS_OF_SECTORS,
                 status=Status.HF_TAG_OK,
-                parsed={ 'status': Status.HF_TAG_OK },
+                parsed={"status": Status.HF_TAG_OK},
             )
         # base timeout: 1s
         # auth: len(keys) * sectorKey_to_be_checked * 0.1s
         # read keyB from trailer block: 0.1s
         timeout = 1 + (bitsCnt + 1) * len(keys) * 0.1
 
-        resp = self.device.send_cmd_sync(Command.MF1_CHECK_KEYS_OF_SECTORS, data, timeout=timeout)
-        resp.parsed = { 'status': resp.status }
+        resp = self.device.send_cmd_sync(
+            Command.MF1_CHECK_KEYS_OF_SECTORS, data, timeout=timeout
+        )
+        resp.parsed = {"status": resp.status}
         if len(resp.data) == 490:
-            found = ''.join([format(i, '08b') for i in resp.data[0:10]])
+            found = "".join([format(i, "08b") for i in resp.data[0:10]])
             # print(f'{found = }')
-            resp.parsed.update({
-                'found': resp.data[0:10],
-                'sectorKeys': {k: resp.data[6 * k + 10:6 * k + 16] for k, v in enumerate(found) if v == '1'}
-            })
+            resp.parsed.update(
+                {
+                    "found": resp.data[0:10],
+                    "sectorKeys": {
+                        k: resp.data[6 * k + 10 : 6 * k + 16]
+                        for k, v in enumerate(found)
+                        if v == "1"
+                    },
+                }
+            )
         return resp
 
     @expect_response(Status.HF_TAG_OK)
-    def mf1_static_nested_acquire(self, block_known, type_known, key_known, block_target, type_target):
+    def mf1_static_nested_acquire(
+        self, block_known, type_known, key_known, block_target, type_target
+    ):
         """
         Collect the key NT parameters needed for StaticNested decryption
         :return:
         """
-        data = struct.pack('!BB6sBB', type_known, block_known, key_known, type_target, block_target)
+        data = struct.pack(
+            "!BB6sBB", type_known, block_known, key_known, type_target, block_target
+        )
         resp = self.device.send_cmd_sync(Command.MF1_STATIC_NESTED_ACQUIRE, data)
         if resp.status == Status.HF_TAG_OK:
             resp.parsed = {
-                'uid': struct.unpack('!I', resp.data[0:4])[0],
-                'nts': [
-                    {
-                        'nt': nt,
-                        'nt_enc': nt_enc
-                    } for nt, nt_enc in struct.iter_unpack('!II', resp.data[4:])
-                ]
+                "uid": struct.unpack("!I", resp.data[0:4])[0],
+                "nts": [
+                    {"nt": nt, "nt_enc": nt_enc}
+                    for nt, nt_enc in struct.iter_unpack("!II", resp.data[4:])
+                ],
             }
         return resp
 
@@ -516,11 +629,13 @@ class Pn532CMD:
         :param id_bytes: ID card number
         :return:
         """
-        new_key = b'\x20\x20\x66\x66'
-        old_keys = [b'\x51\x24\x36\x48', b'\x19\x92\x04\x27']
+        new_key = b"\x20\x20\x66\x66"
+        old_keys = [b"\x51\x24\x36\x48", b"\x19\x92\x04\x27"]
         if len(id_bytes) != 5:
             raise ValueError("The id bytes length must equal 5")
-        data = struct.pack(f'!5s4s{4*len(old_keys)}s', id_bytes, new_key, b''.join(old_keys))
+        data = struct.pack(
+            f"!5s4s{4*len(old_keys)}s", id_bytes, new_key, b"".join(old_keys)
+        )
         return self.device.send_cmd_sync(Command.EM410X_WRITE_TO_T55XX, data)
 
     @expect_response(Status.SUCCESS)
@@ -532,8 +647,9 @@ class Pn532CMD:
         """
         resp = self.device.send_cmd_sync(Command.GET_SLOT_INFO)
         if resp.status == Status.SUCCESS:
-            resp.parsed = [{'hf': hf, 'lf': lf}
-                           for hf, lf in struct.iter_unpack('!HH', resp.data)]
+            resp.parsed = [
+                {"hf": hf, "lf": lf} for hf, lf in struct.iter_unpack("!HH", resp.data)
+            ]
         return resp
 
     @expect_response(Status.SUCCESS)
@@ -557,7 +673,7 @@ class Pn532CMD:
         :return:
         """
         # SlotNumber() will raise error for us if slot_index not in slot range
-        data = struct.pack('!B', SlotNumber.to_fw(slot_index))
+        data = struct.pack("!B", SlotNumber.to_fw(slot_index))
         return self.device.send_cmd_sync(Command.SET_ACTIVE_SLOT, data)
 
     @expect_response(Status.SUCCESS)
@@ -572,7 +688,7 @@ class Pn532CMD:
         :return:
         """
         # SlotNumber() will raise error for us if slot_index not in slot range
-        data = struct.pack('!BH', SlotNumber.to_fw(slot_index), tag_type)
+        data = struct.pack("!BH", SlotNumber.to_fw(slot_index), tag_type)
         return self.device.send_cmd_sync(Command.SET_SLOT_TAG_TYPE, data)
 
     @expect_response(Status.SUCCESS)
@@ -584,7 +700,7 @@ class Pn532CMD:
         :param sense_type: Sense type to disable
         :return:
         """
-        data = struct.pack('!BB', SlotNumber.to_fw(slot_index), sense_type)
+        data = struct.pack("!BB", SlotNumber.to_fw(slot_index), sense_type)
         return self.device.send_cmd_sync(Command.DELETE_SLOT_SENSE_TYPE, data)
 
     @expect_response(Status.SUCCESS)
@@ -598,11 +714,13 @@ class Pn532CMD:
         :return:
         """
         # SlotNumber() will raise error for us if slot_index not in slot range
-        data = struct.pack('!BH', SlotNumber.to_fw(slot_index), tag_type)
+        data = struct.pack("!BH", SlotNumber.to_fw(slot_index), tag_type)
         return self.device.send_cmd_sync(Command.SET_SLOT_DATA_DEFAULT, data)
 
     @expect_response(Status.SUCCESS)
-    def set_slot_enable(self, slot_index: SlotNumber, sense_type: TagSenseType, enabled: bool):
+    def set_slot_enable(
+        self, slot_index: SlotNumber, sense_type: TagSenseType, enabled: bool
+    ):
         """
         Set whether the specified card slot is enabled.
 
@@ -611,7 +729,7 @@ class Pn532CMD:
         :return:
         """
         # SlotNumber() will raise error for us if slot_index not in slot range
-        data = struct.pack('!BBB', SlotNumber.to_fw(slot_index), sense_type, enabled)
+        data = struct.pack("!BBB", SlotNumber.to_fw(slot_index), sense_type, enabled)
         return self.device.send_cmd_sync(Command.SET_SLOT_ENABLE, data)
 
     @expect_response(Status.SUCCESS)
@@ -624,13 +742,13 @@ class Pn532CMD:
         """
         if len(id) != 5:
             raise ValueError("The id bytes length must equal 5")
-        data = struct.pack('5s', id)
+        data = struct.pack("5s", id)
         return self.device.send_cmd_sync(Command.EM410X_SET_EMU_ID, data)
 
     @expect_response(Status.SUCCESS)
     def em410x_get_emu_id(self):
         """
-            Get the simulated EM410x card id
+        Get the simulated EM410x card id
         """
         resp = self.device.send_cmd_sync(Command.EM410X_GET_EMU_ID)
         resp.parsed = resp.data
@@ -644,7 +762,7 @@ class Pn532CMD:
         :param enable: Whether to enable
         :return:
         """
-        data = struct.pack('!B', enabled)
+        data = struct.pack("!B", enabled)
         return self.device.send_cmd_sync(Command.MF1_SET_DETECTION_ENABLE, data)
 
     @expect_response(Status.SUCCESS)
@@ -656,7 +774,7 @@ class Pn532CMD:
         """
         resp = self.device.send_cmd_sync(Command.MF1_GET_DETECTION_COUNT)
         if resp.status == Status.SUCCESS:
-            resp.parsed, = struct.unpack('!I', resp.data)
+            (resp.parsed,) = struct.unpack("!I", resp.data)
         return resp
 
     @expect_response(Status.SUCCESS)
@@ -667,24 +785,28 @@ class Pn532CMD:
         :param index: start index
         :return:
         """
-        data = struct.pack('!I', index)
+        data = struct.pack("!I", index)
         resp = self.device.send_cmd_sync(Command.MF1_GET_DETECTION_LOG, data)
         if resp.status == Status.SUCCESS:
             # convert
             result_list = []
             pos = 0
             while pos < len(resp.data):
-                block, bitfield, uid, nt, nr, ar = struct.unpack_from('!BB4s4s4s4s', resp.data, pos)
-                result_list.append({
-                    'block': block,
-                    'type': ['A', 'B'][bitfield & 0x01],
-                    'is_nested': bool(bitfield & 0x02),
-                    'uid': uid.hex(),
-                    'nt': nt.hex(),
-                    'nr': nr.hex(),
-                    'ar': ar.hex()
-                })
-                pos += struct.calcsize('!BB4s4s4s4s')
+                block, bitfield, uid, nt, nr, ar = struct.unpack_from(
+                    "!BB4s4s4s4s", resp.data, pos
+                )
+                result_list.append(
+                    {
+                        "block": block,
+                        "type": ["A", "B"][bitfield & 0x01],
+                        "is_nested": bool(bitfield & 0x02),
+                        "uid": uid.hex(),
+                        "nt": nt.hex(),
+                        "nr": nr.hex(),
+                        "ar": ar.hex(),
+                    }
+                )
+                pos += struct.calcsize("!BB4s4s4s4s")
             resp.parsed = result_list
         return resp
 
@@ -698,15 +820,15 @@ class Pn532CMD:
                             automatically from block_start  increment
         :return:
         """
-        data = struct.pack(f'!B{len(block_data)}s', block_start, block_data)
+        data = struct.pack(f"!B{len(block_data)}s", block_start, block_data)
         return self.device.send_cmd_sync(Command.MF1_WRITE_EMU_BLOCK_DATA, data)
 
     @expect_response(Status.SUCCESS)
     def mf1_read_emu_block_data(self, block_start: int, block_count: int):
         """
-            Gets data for selected block range
+        Gets data for selected block range
         """
-        data = struct.pack('!BB', block_start, block_count)
+        data = struct.pack("!BB", block_start, block_count)
         resp = self.device.send_cmd_sync(Command.MF1_READ_EMU_BLOCK_DATA, data)
         resp.parsed = resp.data
         return resp
@@ -714,7 +836,7 @@ class Pn532CMD:
     @expect_response(Status.SUCCESS)
     def mfu_get_emu_pages_count(self):
         """
-            Gets the number of pages available in the current MF0 / NTAG slot
+        Gets the number of pages available in the current MF0 / NTAG slot
         """
         resp = self.device.send_cmd_sync(Command.MF0_NTAG_GET_PAGE_COUNT)
         resp.parsed = resp.data[0]
@@ -723,9 +845,9 @@ class Pn532CMD:
     @expect_response(Status.SUCCESS)
     def mfu_read_emu_page_data(self, page_start: int, page_count: int):
         """
-            Gets data for selected block range
+        Gets data for selected block range
         """
-        data = struct.pack('!BB', page_start, page_count)
+        data = struct.pack("!BB", page_start, page_count)
         resp = self.device.send_cmd_sync(Command.MF0_NTAG_READ_EMU_PAGE_DATA, data)
         resp.parsed = resp.data
         return resp
@@ -733,41 +855,50 @@ class Pn532CMD:
     @expect_response(Status.SUCCESS)
     def mfu_write_emu_page_data(self, page_start: int, data: bytes):
         """
-            Gets data for selected block range
+        Gets data for selected block range
         """
         count = len(data) >> 2
 
         assert (len(data) % 4) == 0
         assert (page_start >= 0) and (count + page_start) <= 256
 
-        data = struct.pack('!BB', page_start, count) + data
+        data = struct.pack("!BB", page_start, count) + data
         resp = self.device.send_cmd_sync(Command.MF0_NTAG_WRITE_EMU_PAGE_DATA, data)
         return resp
 
     @expect_response(Status.SUCCESS)
     def mfu_read_emu_counter_data(self, index: int) -> (int, bool):
         """
-            Gets data for selected counter
+        Gets data for selected counter
         """
-        data = struct.pack('!B', index)
+        data = struct.pack("!B", index)
         resp = self.device.send_cmd_sync(Command.MF0_NTAG_GET_COUNTER_DATA, data)
         if resp.status == Status.SUCCESS:
-            resp.parsed = (((resp.data[0] << 16) | (resp.data[1] << 8) | resp.data[2]), resp.data[3] == 0xBD)
+            resp.parsed = (
+                ((resp.data[0] << 16) | (resp.data[1] << 8) | resp.data[2]),
+                resp.data[3] == 0xBD,
+            )
         return resp
 
     @expect_response(Status.SUCCESS)
     def mfu_write_emu_counter_data(self, index: int, value: int, reset_tearing: bool):
         """
-            Sets data for selected counter
+        Sets data for selected counter
         """
-        data = struct.pack('!BBBB', index | (int(reset_tearing) << 7), (value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF)
+        data = struct.pack(
+            "!BBBB",
+            index | (int(reset_tearing) << 7),
+            (value >> 16) & 0xFF,
+            (value >> 8) & 0xFF,
+            value & 0xFF,
+        )
         resp = self.device.send_cmd_sync(Command.MF0_NTAG_SET_COUNTER_DATA, data)
         return resp
 
     @expect_response(Status.SUCCESS)
     def mfu_reset_auth_cnt(self):
         """
-            Resets authentication counter
+        Resets authentication counter
         """
         resp = self.device.send_cmd_sync(Command.MF0_NTAG_RESET_AUTH_CNT, bytes())
         if resp.status == Status.SUCCESS:
@@ -775,7 +906,9 @@ class Pn532CMD:
         return resp
 
     @expect_response(Status.SUCCESS)
-    def hf14a_set_anti_coll_data(self, uid: bytes, atqa: bytes, sak: bytes, ats: bytes = b''):
+    def hf14a_set_anti_coll_data(
+        self, uid: bytes, atqa: bytes, sak: bytes, ats: bytes = b""
+    ):
         """
         Set anti-collision data of current HF slot (UID/SAK/ATQA/ATS).
 
@@ -785,7 +918,9 @@ class Pn532CMD:
         :param ats:  ats bytes (optional)
         :return:
         """
-        data = struct.pack(f'!B{len(uid)}s2s1sB{len(ats)}s', len(uid), uid, atqa, sak, len(ats), ats)
+        data = struct.pack(
+            f"!B{len(uid)}s2s1sB{len(ats)}s", len(uid), uid, atqa, sak, len(ats), ats
+        )
         return self.device.send_cmd_sync(Command.HF14A_SET_ANTI_COLL_DATA, data)
 
     @expect_response(Status.SUCCESS)
@@ -802,7 +937,9 @@ class Pn532CMD:
         if len(encoded_name) > 32:
             raise ValueError("Your tag nick name too long.")
         # SlotNumber() will raise error for us if slot not in slot range
-        data = struct.pack(f'!BB{len(encoded_name)}s', SlotNumber.to_fw(slot), sense_type, encoded_name)
+        data = struct.pack(
+            f"!BB{len(encoded_name)}s", SlotNumber.to_fw(slot), sense_type, encoded_name
+        )
         return self.device.send_cmd_sync(Command.SET_SLOT_TAG_NICK, data)
 
     @expect_response(Status.SUCCESS)
@@ -815,7 +952,7 @@ class Pn532CMD:
         :return:
         """
         # SlotNumber() will raise error for us if slot not in slot range
-        data = struct.pack('!BB', SlotNumber.to_fw(slot), sense_type)
+        data = struct.pack("!BB", SlotNumber.to_fw(slot), sense_type)
         resp = self.device.send_cmd_sync(Command.GET_SLOT_TAG_NICK, data)
         resp.parsed = resp.data.decode(encoding="utf8")
         return resp
@@ -830,7 +967,7 @@ class Pn532CMD:
         :return:
         """
         # SlotNumber() will raise error for us if slot not in slot range
-        data = struct.pack('!BB', SlotNumber.to_fw(slot), sense_type)
+        data = struct.pack("!BB", SlotNumber.to_fw(slot), sense_type)
         return self.device.send_cmd_sync(Command.DELETE_SLOT_TAG_NICK, data)
 
     @expect_response(Status.SUCCESS)
@@ -847,12 +984,14 @@ class Pn532CMD:
         """
         resp = self.device.send_cmd_sync(Command.MF1_GET_EMULATOR_CONFIG)
         if resp.status == Status.SUCCESS:
-            b1, b2, b3, b4, b5 = struct.unpack('!????B', resp.data)
-            resp.parsed = {'detection': b1,
-                           'gen1a_mode': b2,
-                           'gen2_mode': b3,
-                           'block_anti_coll_mode': b4,
-                           'write_mode': b5}
+            b1, b2, b3, b4, b5 = struct.unpack("!????B", resp.data)
+            resp.parsed = {
+                "detection": b1,
+                "gen1a_mode": b2,
+                "gen2_mode": b3,
+                "block_anti_coll_mode": b4,
+                "write_mode": b5,
+            }
         return resp
 
     @expect_response(Status.SUCCESS)
@@ -860,7 +999,7 @@ class Pn532CMD:
         """
         Set gen1a magic mode
         """
-        data = struct.pack('!B', enabled)
+        data = struct.pack("!B", enabled)
         return self.device.send_cmd_sync(Command.MF1_SET_GEN1A_MODE, data)
 
     @expect_response(Status.SUCCESS)
@@ -868,7 +1007,7 @@ class Pn532CMD:
         """
         Set gen2 magic mode
         """
-        data = struct.pack('!B', enabled)
+        data = struct.pack("!B", enabled)
         return self.device.send_cmd_sync(Command.MF1_SET_GEN2_MODE, data)
 
     @expect_response(Status.SUCCESS)
@@ -876,7 +1015,7 @@ class Pn532CMD:
         """
         Set 0 block anti-collision data
         """
-        data = struct.pack('!B', enabled)
+        data = struct.pack("!B", enabled)
         return self.device.send_cmd_sync(Command.MF1_SET_BLOCK_ANTI_COLL_MODE, data)
 
     @expect_response(Status.SUCCESS)
@@ -884,7 +1023,7 @@ class Pn532CMD:
         """
         Set write mode
         """
-        data = struct.pack('!B', mode)
+        data = struct.pack("!B", mode)
         return self.device.send_cmd_sync(Command.MF1_SET_WRITE_MODE, data)
 
     @expect_response(Status.SUCCESS)
@@ -912,7 +1051,9 @@ class Pn532CMD:
         """
         resp = self.device.send_cmd_sync(Command.GET_ENABLED_SLOTS)
         if resp.status == Status.SUCCESS:
-            resp.parsed = [{'hf': hf, 'lf': lf} for hf, lf in struct.iter_unpack('!BB', resp.data)]
+            resp.parsed = [
+                {"hf": hf, "lf": lf} for hf, lf in struct.iter_unpack("!BB", resp.data)
+            ]
         return resp
 
     @expect_response(Status.SUCCESS)
@@ -920,7 +1061,7 @@ class Pn532CMD:
         """
         Set animation mode value
         """
-        data = struct.pack('!B', value)
+        data = struct.pack("!B", value)
         return self.device.send_cmd_sync(Command.SET_ANIMATION_MODE, data)
 
     @expect_response(Status.SUCCESS)
@@ -958,7 +1099,7 @@ class Pn532CMD:
         """
         resp = self.device.send_cmd_sync(Command.GET_BATTERY_INFO)
         if resp.status == Status.SUCCESS:
-            resp.parsed = struct.unpack('!HB', resp.data)
+            resp.parsed = struct.unpack("!HB", resp.data)
         return resp
 
     @expect_response(Status.SUCCESS)
@@ -966,18 +1107,20 @@ class Pn532CMD:
         """
         Get config of button press function
         """
-        data = struct.pack('!B', button)
+        data = struct.pack("!B", button)
         resp = self.device.send_cmd_sync(Command.GET_BUTTON_PRESS_CONFIG, data)
         if resp.status == Status.SUCCESS:
             resp.parsed = resp.data[0]
         return resp
 
     @expect_response(Status.SUCCESS)
-    def set_button_press_config(self, button: ButtonType, function: ButtonPressFunction):
+    def set_button_press_config(
+        self, button: ButtonType, function: ButtonPressFunction
+    ):
         """
         Set config of button press function
         """
-        data = struct.pack('!BB', button, function)
+        data = struct.pack("!BB", button, function)
         return self.device.send_cmd_sync(Command.SET_BUTTON_PRESS_CONFIG, data)
 
     @expect_response(Status.SUCCESS)
@@ -985,18 +1128,20 @@ class Pn532CMD:
         """
         Get config of long button press function
         """
-        data = struct.pack('!B', button)
+        data = struct.pack("!B", button)
         resp = self.device.send_cmd_sync(Command.GET_LONG_BUTTON_PRESS_CONFIG, data)
         if resp.status == Status.SUCCESS:
             resp.parsed = resp.data[0]
         return resp
 
     @expect_response(Status.SUCCESS)
-    def set_long_button_press_config(self, button: ButtonType, function: ButtonPressFunction):
+    def set_long_button_press_config(
+        self, button: ButtonType, function: ButtonPressFunction
+    ):
         """
         Set config of long button press function
         """
-        data = struct.pack('!BB', button, function)
+        data = struct.pack("!BB", button, function)
         return self.device.send_cmd_sync(Command.SET_LONG_BUTTON_PRESS_CONFIG, data)
 
     @expect_response(Status.SUCCESS)
@@ -1004,13 +1149,13 @@ class Pn532CMD:
         """
         Set config of ble connect key
         """
-        data_bytes = key.encode(encoding='ascii')
+        data_bytes = key.encode(encoding="ascii")
 
         # check key length
         if len(data_bytes) != 6:
             raise ValueError("The ble connect key length must be 6")
 
-        data = struct.pack('6s', data_bytes)
+        data = struct.pack("6s", data_bytes)
         return self.device.send_cmd_sync(Command.SET_BLE_PAIRING_KEY, data)
 
     @expect_response(Status.SUCCESS)
@@ -1019,7 +1164,7 @@ class Pn532CMD:
         Get config of ble connect key
         """
         resp = self.device.send_cmd_sync(Command.GET_BLE_PAIRING_KEY)
-        resp.parsed = resp.data.decode(encoding='ascii')
+        resp.parsed = resp.data.decode(encoding="ascii")
         return resp
 
     @expect_response(Status.SUCCESS)
@@ -1038,19 +1183,22 @@ class Pn532CMD:
             resp = self.device.send_cmd_sync(Command.GetFirmwareVersion)
         except pn532_com.CMDInvalidException:
             print("Device does not understand GetFirmwareVersion command.")
-            return pn532_com.Response(cmd=Command.GetFirmwareVersion,
-                                          status=Status.NOT_IMPLEMENTED)
+            return pn532_com.Response(
+                cmd=Command.GetFirmwareVersion, status=Status.NOT_IMPLEMENTED
+            )
         else:
             if resp.status == Status.SUCCESS:
-                resp.parsed = [x[0] for x in struct.iter_unpack('!H', resp.data)]
+                resp.parsed = [x[0] for x in struct.iter_unpack("!H", resp.data)]
             return resp
-        
+
     @expect_response(Status.SUCCESS)
     def get_firmware_version(self):
         """
         Get firmware version
         """
-        resp = self.device.send_cmd_sync(Command.GetFirmwareVersion, None, Status.SUCCESS, 1)
+        resp = self.device.send_cmd_sync(
+            Command.GetFirmwareVersion, None, Status.SUCCESS, 1
+        )
         resp.parsed = f"Ver.{resp.data.hex()}"
         return resp
 
@@ -1062,12 +1210,15 @@ class Pn532CMD:
         try:
             resp = self.device.send_cmd_sync(Command.GET_DEVICE_CAPABILITIES)
         except pn532_com.CMDInvalidException:
-            print("Pn532 does not understand get_device_capabilities command. Please update firmware")
-            return pn532_com.Response(cmd=Command.GET_DEVICE_CAPABILITIES,
-                                          status=Status.NOT_IMPLEMENTED)
+            print(
+                "Pn532 does not understand get_device_capabilities command. Please update firmware"
+            )
+            return pn532_com.Response(
+                cmd=Command.GET_DEVICE_CAPABILITIES, status=Status.NOT_IMPLEMENTED
+            )
         else:
             if resp.status == Status.SUCCESS:
-                resp.parsed = [x[0] for x in struct.iter_unpack('!H', resp.data)]
+                resp.parsed = [x[0] for x in struct.iter_unpack("!H", resp.data)]
             return resp
 
     @expect_response(Status.SUCCESS)
@@ -1100,22 +1251,34 @@ class Pn532CMD:
         resp = self.device.send_cmd_sync(Command.GET_DEVICE_SETTINGS)
         if resp.status == Status.SUCCESS:
             if resp.data[0] > CURRENT_VERSION_SETTINGS:
-                raise ValueError("Settings version in app older than Pn532. "
-                                 "Please upgrade client")
+                raise ValueError(
+                    "Settings version in app older than Pn532. " "Please upgrade client"
+                )
             if resp.data[0] < CURRENT_VERSION_SETTINGS:
-                raise ValueError("Settings version in app newer than Pn532. "
-                                 "Please upgrade Pn532 firmware")
-            settings_version, animation_mode, btn_press_A, btn_press_B, btn_long_press_A, \
-                btn_long_press_B, ble_pairing_enable, ble_pairing_key = \
-                struct.unpack('!BBBBBBB6s', resp.data)
-            resp.parsed = {'settings_version': settings_version,
-                           'animation_mode': animation_mode,
-                           'btn_press_A': btn_press_A,
-                           'btn_press_B': btn_press_B,
-                           'btn_long_press_A': btn_long_press_A,
-                           'btn_long_press_B': btn_long_press_B,
-                           'ble_pairing_enable': ble_pairing_enable,
-                           'ble_pairing_key': ble_pairing_key}
+                raise ValueError(
+                    "Settings version in app newer than Pn532. "
+                    "Please upgrade Pn532 firmware"
+                )
+            (
+                settings_version,
+                animation_mode,
+                btn_press_A,
+                btn_press_B,
+                btn_long_press_A,
+                btn_long_press_B,
+                ble_pairing_enable,
+                ble_pairing_key,
+            ) = struct.unpack("!BBBBBBB6s", resp.data)
+            resp.parsed = {
+                "settings_version": settings_version,
+                "animation_mode": animation_mode,
+                "btn_press_A": btn_press_A,
+                "btn_press_B": btn_press_B,
+                "btn_long_press_A": btn_long_press_A,
+                "btn_long_press_B": btn_long_press_B,
+                "ble_pairing_enable": ble_pairing_enable,
+                "ble_pairing_key": ble_pairing_key,
+            }
         return resp
 
     @expect_response(Status.SUCCESS)
@@ -1129,25 +1292,29 @@ class Pn532CMD:
         if resp.status == Status.SUCCESS and len(resp.data) > 0:
             # uidlen[1]|uid[uidlen]|atqa[2]|sak[1]|atslen[1]|ats[atslen]
             offset = 0
-            uidlen, = struct.unpack_from('!B', resp.data, offset)
-            offset += struct.calcsize('!B')
-            uid, atqa, sak, atslen = struct.unpack_from(f'!{uidlen}s2s1sB', resp.data, offset)
-            offset += struct.calcsize(f'!{uidlen}s2s1sB')
-            ats, = struct.unpack_from(f'!{atslen}s', resp.data, offset)
-            offset += struct.calcsize(f'!{atslen}s')
-            resp.parsed = {'uid': uid, 'atqa': atqa, 'sak': sak, 'ats': ats}
+            (uidlen,) = struct.unpack_from("!B", resp.data, offset)
+            offset += struct.calcsize("!B")
+            uid, atqa, sak, atslen = struct.unpack_from(
+                f"!{uidlen}s2s1sB", resp.data, offset
+            )
+            offset += struct.calcsize(f"!{uidlen}s2s1sB")
+            (ats,) = struct.unpack_from(f"!{atslen}s", resp.data, offset)
+            offset += struct.calcsize(f"!{atslen}s")
+            resp.parsed = {"uid": uid, "atqa": atqa, "sak": sak, "ats": ats}
         return resp
 
     @expect_response(Status.SUCCESS)
     def mf0_ntag_get_uid_magic_mode(self):
         resp = self.device.send_cmd_sync(Command.MF0_NTAG_GET_UID_MAGIC_MODE)
         if resp.status == Status.SUCCESS:
-            resp.parsed, = struct.unpack('!?', resp.data)
+            (resp.parsed,) = struct.unpack("!?", resp.data)
         return resp
 
     @expect_response(Status.SUCCESS)
     def mf0_ntag_set_uid_magic_mode(self, enabled: bool):
-        return self.device.send_cmd_sync(Command.MF0_NTAG_SET_UID_MAGIC_MODE, struct.pack('?', enabled))
+        return self.device.send_cmd_sync(
+            Command.MF0_NTAG_SET_UID_MAGIC_MODE, struct.pack("?", enabled)
+        )
 
     @expect_response(Status.SUCCESS)
     def mf0_ntag_get_version_data(self):
@@ -1182,96 +1349,142 @@ class Pn532CMD:
         """
         resp = self.device.send_cmd_sync(Command.GET_BLE_PAIRING_ENABLE)
         if resp.status == Status.SUCCESS:
-            resp.parsed, = struct.unpack('!?', resp.data)
+            (resp.parsed,) = struct.unpack("!?", resp.data)
         return resp
 
     @expect_response(Status.SUCCESS)
     def set_ble_pairing_enable(self, enabled: bool):
-        data = struct.pack('!B', enabled)
+        data = struct.pack("!B", enabled)
         return self.device.send_cmd_sync(Command.SET_BLE_PAIRING_ENABLE, data)
 
 
 def test_fn():
     # connect to pn532
     dev = pn532_com.Pn532Com()
-    try:
-        dev.open('/dev/cu.wchusbserial000000011')
-    except pn532_com.OpenFailException:
-        dev.open('/dev/cu.usbserial-2130')
+    platform_name = uname().release
+    if "Microsoft" in platform_name:
+        path = os.environ["PATH"].split(os.pathsep)
+        path.append("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/")
+        powershell_path = None
+        for prefix in path:
+            fn = os.path.join(prefix, "powershell.exe")
+            if not os.path.isdir(fn) and os.access(fn, os.X_OK):
+                powershell_path = fn
+                break
+        if powershell_path:
+            process = subprocess.Popen(
+                [
+                    powershell_path,
+                    "Get-PnPDevice -Class Ports -PresentOnly |"
+                    " where {$_.DeviceID -like '*VID_6868&PID_8686*'} |"
+                    " Select-Object -First 1 FriendlyName |"
+                    " % FriendlyName |"
+                    " select-string COM\\d+ |"
+                    "% { $_.matches.value }",
+                ],
+                stdout=subprocess.PIPE,
+            )
+            res = process.communicate()[0]
+            _comport = res.decode("utf-8").strip()
+            if _comport:
+                dev.open(_comport.replace("COM", "/dev/ttyS"))
+    else:
+        # loop through all ports and find pn532
+        for port in serial.tools.list_ports.comports():
+            if port.vid == 6790:
+                dev.open(port.device)
+                break
+            # if device name contains PN532Killer, it's a PN532Killer
+            if "PN532Killer" in port.description:
+                dev.open(port.device)
+                break
+    # try:
+    #     dev.open('/dev/cu.wchusbserial000000011')
+    # except pn532_com.OpenFailException:
+    #     dev.open('/dev/cu.usbserial-2130')
     print(f"Connected to {dev.serial_instance.port}")
     cml = Pn532CMD(dev)
     # ver = cml.get_firmware_version()
     # print(f"Version: {ver}")
-    
-    hf14ascan = cml.hf14a_scan()
-    if hf14ascan == None:
+
+    resp = cml.hf14a_scan()
+    if resp == None:
         print("No HF 14A tag found")
         dev.close()
         return
-    print(f"HF 14A Scan: {hf14ascan[0]['uid'].hex().upper()}")
-    
-    
-    # hf15scan = cml.hf15_scan()
-    # print(f"HF 15 Scan: {hf15scan}")
-    # change to reader mode
-    # cml.set_device_reader_mode()
-
+    print(f"HF 14A Scan: {resp[0]['uid'].hex().upper()}")
     options = {
-        'activate_rf_field': 1,
-        'wait_response': 1,
-        'append_crc': 0,
-        'auto_select': 0,
-        'keep_rf_field': 1,
-        'check_response_crc': 0,
+        "activate_rf_field": 1,
+        "wait_response": 1,
+        "append_crc": 0,
+        "auto_select": 0,
+        "keep_rf_field": 1,
+        "check_response_crc": 0,
     }
 
     try:
-        # unlock 1
-        resp = cml.hf14a_raw(options=options, resp_timeout_ms=1000, data=[0x40], bitlen=7)
-        # print(f"Response: {resp.hex()}")
-        if resp[0] == 0x0a:
-            print("Gen1A unlock 1 success")
-            # unlock 2
-            resp = cml.hf14a_raw(options=options, resp_timeout_ms=1000, data=[0x43])
-            if resp[0] == 0x0a:
-                print("Gen1A unlock 2 success")
-                print("Start dump Gen1A tag")
-                # Transfer with crc
-                options['append_crc'] = 1
-                options['check_response_crc'] = 1
-                block = 0
-                DEBUG = True
-                while block < 64:
-                    # Tag read block cmd
-                    # resp = cml.device.read_mifare_block(block)
-                    
-                    if block == 63:
-                        options['keep_rf_field'] = 0
-                    resp = cml.hf14a_raw(options=options, resp_timeout_ms=1000, data=[Command.MfReadBlock, block])
-                    # print block index with padding 2 spaces
-                    # print(f"block {block:02d}: {resp.hex().upper()}")
-                    if block == 0:
-                        # print uid(green,4)bcc(c0,1)sak(yellow,1)atqa(red,2)factory(yellow,8)
-                      print(f"block {block:02d}: {CG}{resp.hex()[0:8].upper()}{CR}{resp.hex()[8:10].upper()}{CG}{resp.hex()[10:12].upper()}{CR}{resp.hex()[12:].upper()}{C0}")
-                    elif block % 4 == 3:
-                        # if is trailler block print keyA(yellow)acs(red)keyB(yellow)
-                         print(f"block {block:02d}: {CG}{resp.hex()[0:12].upper()}{CR}{resp.hex()[12:20].upper()}{CG}{resp.hex()[20:].upper()}{C0}")
-                    else:
-                        print(f"block {block:02d}: {resp.hex().upper()}")
-                    block += 1
+        tag_info = {}
+        if resp == None:
+            print("No tag found")
+            return resp
+        tag_info["atqa"] = resp[0]["atqa"]
+        tag_info["sak"] = resp[0]["sak"]
+        tag_info["data"] = []
+        new_uid = resp[0]["uid"]
+        # set last byte +1
+        new_uid = bytearray(new_uid)
+        new_uid[-1] = (new_uid[-1] + 1) % 256
+        new_uid = bytes(new_uid)
+        print(f"New UID: {new_uid.hex().upper()}")
+        atqa = tag_info["atqa"].hex()
+        sak = tag_info["sak"].hex()
+        factory_info = "1122334455667788"
+        bcc = 0
+        # bcc is xor of uid 0,1,2,3
+        bcc = new_uid[0] ^ new_uid[1] ^ new_uid[2] ^ new_uid[3]
+        block0 = (
+            new_uid
+            + bytes([bcc])
+            + bytes.fromhex(sak)
+            + bytes.fromhex(atqa)
+            + bytes.fromhex(factory_info)
+        )
+
+        if cml.isGen1a():
+            print("Found Gen1a")
+            options = {
+                "activate_rf_field": 1,
+                "wait_response": 1,
+                "append_crc": 1,
+                "auto_select": 0,
+                "keep_rf_field": 1,
+                "check_response_crc": 0,
+            }
+            resp = cml.hf14a_raw(
+                options=options,
+                resp_timeout_ms=1000,
+                data=[Command.MfWriteBlock, 0],
+            )
+            # write block 0 data
+            print(f"Writing block 0 {block0.hex().upper()}")
+            options["keep_rf_field"] = 0
+            resp = cml.hf14a_raw(
+                options=options,
+                resp_timeout_ms=1000,
+                data=block0,
+            )
+            if len(resp) > 0 and resp[0] == 0x0A:
+                print("Write Done")
             else:
-                print("Gen1A unlock 2 fail")
+                print("Write fail")
                 raise
         else:
-            print("Gen1A unlock 1 fail")
-            raise
-    except Exception:
-        options['keep_rf_field'] = 0
-        options['wait_response'] = 0
-        # cml.hf14a_raw(options=options)
+            print("Not Gen1a")
+    except Exception as e:
+        print("Error:", e)
 
     dev.close()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     test_fn()
