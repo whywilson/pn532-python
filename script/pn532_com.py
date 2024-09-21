@@ -124,6 +124,11 @@ class Pn532Com:
         response = self.send_cmd_sync(Command.SetWorkMode, [mode, type, index])
         return response
     
+    def send_raw(self, data: bytes) -> response:
+        cmd = data[0]
+        response = self.send_cmd_sync(cmd, data[1:])
+        return response.data
+    
     def reset_register(self) -> response:
         response = self.send_cmd_sync(Command.WriteRegister, [0x63, 0x02, 0x00, 0x63, 0x03, 0x00])
         return response
@@ -283,7 +288,6 @@ class Pn532Com:
                     continue
                 data_position += 1
 
-    
     def thread_data_transfer(self):
         while self.isOpen():
             # get a task from queue(if exists)

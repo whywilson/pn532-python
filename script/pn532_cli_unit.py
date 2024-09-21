@@ -282,7 +282,7 @@ class HWModeReader(ReaderRequiredUnit):
     def on_exec(self, args: argparse.Namespace):
         self.device_com.set_work_mode()
         print("Switch to {  Tag Reader  } mode successfully.")
-        
+
 @hw_mode.command("e")
 class HWModeEmulator(ReaderRequiredUnit):
     # support -type m14b1k, 15693, em4100 and -slot 1-8
@@ -310,8 +310,26 @@ class HWModeEmulator(ReaderRequiredUnit):
     
     def on_exec(self, args: argparse.Namespace):
         self.device_com.set_work_mode(3, 1, args.type)
-        print("Switch to {  Sniffer  } mode successfully.")        
-    
+        print("Switch to {  Sniffer  } mode successfully.")
+
+
+@hw.command("raw")
+class HWRaw(ReaderRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Send raw data to device"
+        parser.add_argument("-d", "--data", type=str, required=True, help="Hex data to send", default="00")
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        data = args.data
+        if not re.match(r"^[0-9a-fA-F]+$", data):
+            print("Data must be a HEX string")
+            return
+        data_bytes = bytes.fromhex(data)
+        resp = self.device_com.send_raw(data_bytes)
+        print(f"Response: {' '.join(f'{byte:02X}' for byte in resp)}")
+
 @hf_14a.command("scan")
 class HF14AScan(ReaderRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
