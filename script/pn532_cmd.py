@@ -154,9 +154,7 @@ class Pn532CMD:
         self.device.set_normal_mode()
 
         tag_info = {}
-
         resp = self.hf14a_scan()
-        self.device.halt()
         if resp == None:
             print("No tag found")
             return resp
@@ -171,7 +169,7 @@ class Pn532CMD:
                 raise
 
             options = {
-                "activate_rf_field": 1,
+                "activate_rf_field": 0,
                 "wait_response": 1,
                 "append_crc": 1,
                 "auto_select": 0,
@@ -181,8 +179,6 @@ class Pn532CMD:
             block = 0
             block_data = {}
             while block < 64:
-                # Tag read block cmd
-                # resp = cml.device.read_mifare_block(block)
                 if block == 63:
                     options["keep_rf_field"] = 0
                 resp = self.hf14a_raw(
@@ -242,6 +238,9 @@ class Pn532CMD:
         cs.auto_select = options["auto_select"]
         cs.keep_rf_field = options["keep_rf_field"]
         cs.check_response_crc = options["check_response_crc"]
+
+        if cs.activate_rf_field:
+            self.device.halt()
 
         if bitlen is None:
             bitlen = len(data) * 8  # bits = bytes * 8(bit)
@@ -303,6 +302,7 @@ class Pn532CMD:
         if DEBUG:
             print("unlock 1:", resp.hex())
         if resp[-1] == 0x0A:
+            options["activate_rf_field"] = 0
             # Unlock 2
             resp = self.hf14a_raw(options=options, resp_timeout_ms=1000, data=[0x43])
             if DEBUG:
@@ -378,20 +378,22 @@ class Pn532CMD:
 
     def is_mf_trailler_block(self, block) -> bool:
         return block % 4 == 3
+
     @expect_response(Status.HF_TAG_OK)
     def mf1_write_one_block(self, block, type_value: MfcKeyType, key, block_data):
-        """
-        Write mf1 single block.
+        resp = self.hf14a_scan()
+        if resp == None:
+            print("No tag found")
+            return resp
 
-        :param block:
-        :param type_value:
-        :param key:
-        :param block_data:
-        :return:
-        """
-        data = struct.pack("!BB6s16s", type_value, block, key, block_data)
-        resp = self.device.send_cmd_sync(Command.MF1_WRITE_ONE_BLOCK, data)
-        resp.parsed = resp.status == Status.HF_TAG_OK
+        auth_result = self.mf1_auth_one_key_block(
+            block, type_value, key, bytes(resp[0]["uid"])
+        )
+        if not auth_result:
+            return Response(Command.InDataExchange, Status.HF_TAG_NO)
+        data = struct.pack("!BBB16s", 0x01, MifareCommand.MfWriteBlock, block, block_data)
+        resp = self.device.send_cmd_sync(Command.InDataExchange, data)
+        resp.parsed = resp.data[0] == Status.HF_TAG_OK
         return resp
 
     @expect_response([Status.HF_TAG_OK, Status.HF_TAG_NO])

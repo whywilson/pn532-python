@@ -13,7 +13,13 @@ python pn532_cli_main.py
 
 ## Requirements
 - Python 3.5
-- pySerial
+- pySerial  
+- colorama  
+- prompt-toolkit  
+```bash
+cd script
+pip install -r requirements.txt
+```
 
 ## Protocols
 ### PN532

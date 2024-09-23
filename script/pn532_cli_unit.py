@@ -20,7 +20,7 @@ from pn532_enum import MfcKeyType, MifareCommand
 
 from pn532_utils import CLITree
 
-from pn532_utils import ArgumentParserNoExit, ArgsParserError, CR, C0, CY
+from pn532_utils import ArgumentParserNoExit, ArgsParserError, CG, CR, C0, CY
 
 
 import pn532_com
@@ -226,7 +226,6 @@ class MF1SetUidArgsUnit(ReaderRequiredUnit):
             raise ArgsParserError("UID must be 4 or 7 bytes long")
         return uid
 
-
 class MF1AuthArgsUnit(ReaderRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
@@ -240,10 +239,10 @@ class MF1AuthArgsUnit(ReaderRequiredUnit):
         )
         type_group = parser.add_mutually_exclusive_group()
         type_group.add_argument(
-            "-a", "-A", action="store_true", help="Known key is A key (default)"
+            "-a", action="store_true", help="Known key is A key (default)"
         )
         type_group.add_argument(
-            "-b", "-B", action="store_true", help="Known key is B key"
+            "-b", action="store_true", help="Known key is B key"
         )
         parser.add_argument(
             "-k",
@@ -251,7 +250,7 @@ class MF1AuthArgsUnit(ReaderRequiredUnit):
             type=str,
             required=True,
             metavar="<hex>",
-            help="tag sector key",
+            help="Mifare Sector key (12 HEX symbols)",
         )
         return parser
 
@@ -267,6 +266,18 @@ class MF1AuthArgsUnit(ReaderRequiredUnit):
 
         return Param()
 
+class MF1WriteBlockArgsUnit(MF1AuthArgsUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = super().args_parser()
+        parser.add_argument(
+            "-d", "--data", type=str, required=True, help="32 HEX symbols to write"
+        )
+        return parser
+
+    def get_param(self, args):
+        param = super().get_param(args)
+        param.data = bytearray.fromhex(args.data)
+        return param
 
 @root.command("clear")
 class RootClear(BaseCLIUnit):
@@ -417,7 +428,7 @@ class HF14ARaw(ReaderRequiredUnit):
             action="store_true",
             default=False,
         )
-        parser.add_argument("-d", type=str, metavar="<hex>", help="Hex data to be sent")
+        parser.add_argument("-d", type=str, metavar="<hex>", required=True, help="Hex data to be sent")
         parser.add_argument(
             "-b",
             type=int,
@@ -459,7 +470,7 @@ class HF14ARaw(ReaderRequiredUnit):
             parser.epilog
         ) = """
 examples/notes:
-  hf 14a raw -b 7 -d 40 -k
+  hf 14a raw -a -k -b 7 -d 40
   hf 14a raw -d 43 -k
   hf 14a raw -d 3000 -c
   hf 14a raw -sc -d 6000
@@ -498,11 +509,10 @@ examples/notes:
         resp = self.cmd.hf14a_raw(options, args.t, data_bytes, args.b)
         if len(resp) > 0:
             print(
-                # print head
                 " - "
-                +
-                # print data
-                " ".join([hex(byte).replace("0x", "").rjust(2, "0") for byte in resp])
+                + " ".join(
+                    [hex(byte).replace("0x", "").rjust(2, "0").upper() for byte in resp]
+                )
             )
         else:
             print(f" [*] {CY}No response{C0}")
@@ -736,7 +746,7 @@ examples:
         if self.cmd.isGen1a():
             print("Found Gen1A:", f"{tag_info['uid'].upper()}")
             options = {
-                "activate_rf_field": 1,
+                "activate_rf_field": 0,
                 "wait_response": 1,
                 "append_crc": 1,
                 "auto_select": 0,
@@ -755,9 +765,9 @@ examples:
                 resp_timeout_ms=1000,
                 data=block0,
             )
-            print("Write done")
+            print(f" - {CG}Write done.{C0}")
         else:
-            print("Not Gen1A")
+            print(f"{CR}Tag is not Gen1A{C0}")
 
     def gen2_set_block0(self, block0: bytes):
         pass
@@ -782,7 +792,6 @@ examples:
         elif gen == 4:
             self.gen4_set_block0(block0, pwd=args.p)
 
-
 @hf_mf.command("rdbl")
 class HfMfRdbl(MF1AuthArgsUnit):
     def on_exec(self, args: argparse.Namespace):
@@ -799,6 +808,21 @@ class HfMfRdbl(MF1AuthArgsUnit):
             else:
                 print(f"Block {block} Failed to read")
 
+
+@hf_mf.command("wrbl")
+class HfMfWrbl(MF1WriteBlockArgsUnit):
+    def on_exec(self, args: argparse.Namespace):
+        key_type = MfcKeyType.B if args.b else MfcKeyType.A
+        key: str = args.key
+        data = args.data
+        if not re.match(r"^[a-fA-F0-9]{12}$", key):
+            raise ArgsParserError("key must include 12 HEX symbols")
+        if not re.match(r"^[a-fA-F0-9]{32}$", data):
+            raise ArgsParserError("data must include 32 HEX symbols")
+        resp = self.cmd.mf1_write_one_block(
+            args.blk, key_type, bytes.fromhex(key), bytes.fromhex(data)
+        )
+        print(f" - {CG}Write done.{C0}" if resp else f" - {CR}Write fail.{C0}")
 
 @hf_mf.command("cview")
 class HfMfCview(DeviceRequiredUnit):
