@@ -16,7 +16,7 @@ from typing import Union
 from pathlib import Path
 from platform import uname
 from datetime import datetime
-from pn532_enum import MfcKeyType, MifareClassicPrngType, Command
+from pn532_enum import MfcKeyType, MifareCommand
 
 from pn532_utils import CLITree
 
@@ -69,6 +69,7 @@ hf_15 = hf.subgroup("15", "ISO 15693 commands")
 lf = root.subgroup("lf", "Low Frequency commands")
 lf_em = lf.subgroup("em", "EM commands")
 lf_em_410x = lf_em.subgroup("410x", "EM410x commands")
+
 
 class BaseCLIUnit:
     def __init__(self):
@@ -181,6 +182,7 @@ class BaseCLIUnit:
 
         return ShadowProcess()
 
+
 class DeviceRequiredUnit(BaseCLIUnit):
     """
     Make sure of device online
@@ -193,6 +195,7 @@ class DeviceRequiredUnit(BaseCLIUnit):
         else:
             print("Please connect to pn532 device first(use 'hw connect').")
             return False
+
 
 class ReaderRequiredUnit(DeviceRequiredUnit):
     """
@@ -210,6 +213,7 @@ class ReaderRequiredUnit(DeviceRequiredUnit):
                 return True
         return False
 
+
 class MF1SetUidArgsUnit(ReaderRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
@@ -221,6 +225,7 @@ class MF1SetUidArgsUnit(ReaderRequiredUnit):
         if len(uid) != 14 or len(uid) != 8:
             raise ArgsParserError("UID must be 4 or 7 bytes long")
         return uid
+
 
 class MF1AuthArgsUnit(ReaderRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -262,6 +267,7 @@ class MF1AuthArgsUnit(ReaderRequiredUnit):
 
         return Param()
 
+
 @root.command("clear")
 class RootClear(BaseCLIUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -271,6 +277,7 @@ class RootClear(BaseCLIUnit):
 
     def on_exec(self, args: argparse.Namespace):
         os.system("clear" if os.name == "posix" else "cls")
+
 
 @hw_mode.command("r")
 class HWModeReader(ReaderRequiredUnit):
@@ -283,21 +290,32 @@ class HWModeReader(ReaderRequiredUnit):
         self.device_com.set_work_mode()
         print("Switch to {  Tag Reader  } mode successfully.")
 
+
 @hw_mode.command("e")
 class HWModeEmulator(ReaderRequiredUnit):
     # support -type m14b1k, 15693, em4100 and -slot 1-8
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Set device to emulator mode"
-        parser.add_argument("-t", "--type", default=1, type=int, required=False, help="1 - 4B1K, 3 - 15693, 4 - EM4100")
-        parser.add_argument("-s", "--slot", default=1, type=int, required=False, help="Emulator slot")
+        parser.add_argument(
+            "-t",
+            "--type",
+            default=1,
+            type=int,
+            required=False,
+            help="1 - 4B1K, 3 - 15693, 4 - EM4100",
+        )
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, required=False, help="Emulator slot"
+        )
         return parser
-        
+
     def on_exec(self, args: argparse.Namespace):
         type = args.type
         slot = args.slot
         self.device_com.set_work_mode(2, type, slot - 1)
         print("Switch to {  Emulator  } mode successfully.")
+
 
 @hw_mode.command("s")
 class HWModeEmulator(ReaderRequiredUnit):
@@ -305,9 +323,16 @@ class HWModeEmulator(ReaderRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Set device to sniffer mode"
-        parser.add_argument("-t", "--type", default=0, type=int, required=False, help="0 - Without tag, 1 - With tag")
+        parser.add_argument(
+            "-t",
+            "--type",
+            default=0,
+            type=int,
+            required=False,
+            help="0 - Without tag, 1 - With tag",
+        )
         return parser
-    
+
     def on_exec(self, args: argparse.Namespace):
         self.device_com.set_work_mode(3, 1, args.type)
         print("Switch to {  Sniffer  } mode successfully.")
@@ -318,7 +343,14 @@ class HWRaw(ReaderRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Send raw data to device"
-        parser.add_argument("-d", "--data", type=str, required=True, help="Hex data to send", default="00")
+        parser.add_argument(
+            "-d",
+            "--data",
+            type=str,
+            required=True,
+            help="Hex data to send",
+            default="00",
+        )
         return parser
 
     def on_exec(self, args: argparse.Namespace):
@@ -330,6 +362,7 @@ class HWRaw(ReaderRequiredUnit):
         resp = self.device_com.send_raw(data_bytes)
         print(f"Response: {' '.join(f'{byte:02X}' for byte in resp)}")
 
+
 @hf_14a.command("scan")
 class HF14AScan(ReaderRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -337,21 +370,12 @@ class HF14AScan(ReaderRequiredUnit):
         parser.description = "Scan 14a tag, and print basic information"
         return parser
 
-    def check_mf1_nt(self):
-        # detect mf1 support
-        if self.cmd.mf1_detect_support():
-            # detect prng
-            print("- Mifare Classic technology")
-            prng_type = self.cmd.mf1_detect_prng()
-            print(f"  # Prng: {MifareClassicPrngType(prng_type)}")
-
     def sak_info(self, data_tag):
-        # detect the technology in use based on SAK
         int_sak = data_tag["sak"][0]
         if int_sak in type_id_SAK_dict:
             print(f"- Guessed type(s) from SAK: {type_id_SAK_dict[int_sak]}")
 
-    def scan(self, deep=False):
+    def scan(self):
         resp = self.cmd.hf14a_scan()
         if resp is not None:
             for data_tag in resp:
@@ -363,19 +387,12 @@ class HF14AScan(ReaderRequiredUnit):
                 print(f"- SAK  : {data_tag['sak'].hex().upper()}")
                 if "ats" in data_tag and len(data_tag["ats"]) > 0:
                     print(f"- ATS  : {data_tag['ats'].hex().upper()}")
-                if deep:
-                    self.sak_info(data_tag)
-                    # TODO: following checks cannot be done yet if multiple cards are present
-                    if len(resp) == 1:
-                        self.check_mf1_nt()
-                        # TODO: check for ATS support on 14A3 tags
-                    else:
-                        print("Multiple tags detected, skipping deep tests...")
         else:
             print("ISO14443-A Tag no found")
 
     def on_exec(self, args: argparse.Namespace):
         self.scan()
+
 
 @hf_14a.command("raw")
 class HF14ARaw(ReaderRequiredUnit):
@@ -498,11 +515,11 @@ class HF15Scan(ReaderRequiredUnit):
         parser.description = "Scan ISO15693 tag, and print basic information"
         return parser
 
-    def scan(self, deep=False):
+    def scan(self):
         resp = self.cmd.hf15_scan()
         if resp is not None:
             for data_tag in resp:
-                print(f"- UID  : {data_tag['uidHex'].upper()}")
+                print(f"- UID  : {data_tag['uid'].upper()}")
         else:
             print("ISO15693 Tag no found")
 
@@ -581,7 +598,7 @@ class HWConnect(BaseCLIUnit):
                 # print connecting to device name
             print(f"Connecting to device on port {args.port}")
             self.device_com.open(args.port)
-
+            print("Device:", self.device_com.get_device_name())
         except Exception as e:
             print(f"{CR}PN532 Connect fail: {str(e)}{C0}")
             self.device_com.close()
@@ -620,7 +637,13 @@ class HfMfSetUid(ReaderRequiredUnit):
             default="11223344",
         )
         # add block data, 16 bytes
-        parser.add_argument("-b", metavar="<hex>", type=str, required=False, help="Block 0 (16 bytes)")
+        parser.add_argument(
+            "--blk0",
+            metavar="<hex>",
+            type=str,
+            required=False,
+            help="Block 0 (16 bytes)",
+        )
         parser.add_argument(
             "-g",
             type=int,
@@ -642,8 +665,8 @@ class HfMfSetUid(ReaderRequiredUnit):
 examples:
   hf mf setuid -u 11223344
   hf mf setuid -u 11223344 -g 2
-  hf mf setuid -block0 1122334444080400aabbccddeeff1122 -g 3
-  hf mf setuid -block0 1122334444080400aabbccddeeff1122 -g 4 --pwd 00000000
+  hf mf setuid --blk0 1122334444080400aabbccddeeff1122 -g 3
+  hf mf setuid --blk0 1122334444080400aabbccddeeff1122 -g 4 --pwd 00000000
 """
         return parser
 
@@ -660,17 +683,17 @@ examples:
     def get_block0(self, args):
         sak = 0x08
         atqa = 0x0400
-        factory_info = 0xaabbccddeeff0011
+        factory_info = 0xAABBCCDDEEFFFFFF
         uid = self.str_to_bytes(args.u)
-        block0 = args.b
-        if(block0 == None):
+        block0 = args.blk0
+        if block0 == None:
             if len(uid) != 4 and len(uid) != 7:
                 print(f"{CR}UID needs to be 4 bytes or 7 bytes{C0}")
                 return
             bcc = 0
             if len(uid) == 4:
                 bcc = uid[0] ^ uid[1] ^ uid[2] ^ uid[3]
-            uid_hex = ''.join(format(x, '02x') for x in uid)
+            uid_hex = "".join(format(x, "02x") for x in uid)
             block0 = f"{uid_hex}{format(bcc, '02x')}{format(sak, '02x')}{format(atqa, '04x')}{format(factory_info, '016x')}"
         else:
             if self.is_hex(block0) == False:
@@ -684,15 +707,15 @@ examples:
             bcc = 0
             bcc = uid[0] ^ uid[1] ^ uid[2] ^ uid[3]
             # check if bcc is valid on the block0
-            if  block0[8:10] != format(bcc, '02x'):
+            if block0[8:10] != format(bcc, "02x"):
                 print(f"{CR}Invalid BCC{C0}")
                 return
         return self.str_to_bytes(block0)
 
     def gen1a_set_block0(self, block0: bytes):
         tag_info = {}
-
         resp = self.cmd.hf14a_scan()
+        self.device_com.halt()
         if resp == None:
             print("No tag found")
             return resp
@@ -710,7 +733,7 @@ examples:
             "check_response_crc": 0,
         }
 
-        if(self.cmd.isGen1a()):
+        if self.cmd.isGen1a():
             print("Found Gen1A:", f"{tag_info['uid'].upper()}")
             options = {
                 "activate_rf_field": 1,
@@ -723,7 +746,7 @@ examples:
             resp = self.cmd.hf14a_raw(
                 options=options,
                 resp_timeout_ms=1000,
-                data=[Command.MfWriteBlock, 0],
+                data=[MifareCommand.MfWriteBlock, 0],
             )
             print(f"Writing block 0: {block0.hex().upper()}")
             options["keep_rf_field"] = 0
@@ -757,7 +780,25 @@ examples:
         elif gen == 3:
             self.gen3_set_block0(block0)
         elif gen == 4:
-            self.gen4_set_block0(block0, pwd = args.p)
+            self.gen4_set_block0(block0, pwd=args.p)
+
+
+@hf_mf.command("rdbl")
+class HfMfRdbl(MF1AuthArgsUnit):
+    def on_exec(self, args: argparse.Namespace):
+        block = args.blk
+        key_type = MfcKeyType.B if args.b else MfcKeyType.A
+        key: str = args.key
+        if not re.match(r"^[a-fA-F0-9]{12}$", key):
+            raise ArgsParserError("key must include 12 HEX symbols")
+        resp = self.cmd.mf1_read_one_block(block, key_type, bytes.fromhex(key))
+
+        if resp is not None:
+            if resp.parsed is not None:
+                print(f"Block {block}: {resp.parsed.hex().upper()}")
+            else:
+                print(f"Block {block} Failed to read")
+
 
 @hf_mf.command("cview")
 class HfMfCview(DeviceRequiredUnit):

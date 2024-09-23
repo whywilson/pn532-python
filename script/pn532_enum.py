@@ -1,6 +1,5 @@
 import enum
 
-
 @enum.unique
 class Command(enum.IntEnum):
     Diagnose = 0x00
@@ -23,15 +22,26 @@ class Command(enum.IntEnum):
     InPSL = 0x4E
     InDataExchange = 0x40
     InCommunicateThru = 0x42
-    MfReadBlock = 0x30
-    MfWriteBlock = 0xA0
     InDeselect = 0x44
     InRelease = 0x52
     InSelect = 0x54
     InAutoPoll = 0x60
-    
+
+
+@enum.unique
+class Pn532KillerCommand(enum.IntEnum):
+    getEmulatorData = 0x1C
+    writeEmulatorData = 0x1E
     checkPn532Killer = 0xAA
     SetWorkMode = 0xAC
+    GetSnifferLog = 0x20
+    ClearSnifferLog = 0x22 
+
+
+@enum.unique
+class MifareCommand(enum.IntEnum):
+    MfReadBlock = 0x30
+    MfWriteBlock = 0xA0
 
 @enum.unique
 class Status(enum.IntEnum):
