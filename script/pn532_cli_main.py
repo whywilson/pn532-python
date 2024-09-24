@@ -11,6 +11,7 @@ from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import FileHistory
 from pn532_utils import CR, CG, CY, C0, CM
 import pn532_com
+from pn532_com import DEBUG
 
 # create by http://patorjk.com/software/taag/#p=display&f=ANSI%20Shadow&t=Chameleon%20Ultra
 BANNER = """
@@ -135,7 +136,8 @@ class Pn532CLI:
                                                     history=FileHistory(str(pathlib.Path.home() /
                                                                             ".pn532_history")))
 
-        self.print_banner()
+        if not DEBUG: 
+            self.print_banner()
         cmd_strs = []
         cmd_str = ''
         while True:
@@ -154,8 +156,8 @@ class Pn532CLI:
                 except KeyboardInterrupt:
                     cmd_str = 'exit'
             self.exec_cmd(cmd_str)
-        
-        
+
+
 if __name__ == '__main__':
     if sys.version_info < (3, 9):
         raise Exception("This script requires at least Python 3.9")

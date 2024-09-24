@@ -831,7 +831,10 @@ class HfMfCview(DeviceRequiredUnit):
         parser.description = "View Gen1a dump"
         # add parser arguments f for save to file, bool type
         parser.add_argument(
-            "-f", "--file", action="store_true", help="Save dump to file"
+            "--file", action="store_true", help="Save to json file"
+        )
+        parser.add_argument(
+            "--bin", action="store_true", help="Save to bin file"
         )
         return parser
 
@@ -852,3 +855,18 @@ class HfMfCview(DeviceRequiredUnit):
             with open(f"{fileName}.json", "w") as f:
                 f.write(jsonString)
                 print(f"Dump saved to {fileName}.json")
+
+        if args.bin:
+            if len(result["blocks"]) != 64:
+                print("The dump is not complete. It should contain 64 blocks.")
+                return
+            fileName = f"hf-mf-{uid}-dump"
+            fileIndex = 1
+            while os.path.exists(f"{fileName}.bin"):
+                fileName = f"hf-mf-{uid}-dump-{fileIndex}"
+                fileIndex += 1
+            with open(f"{fileName}.bin", "wb") as f:
+                for block in result["blocks"].values():
+                    f.write(bytes.fromhex(block))
+                print(f"Dump saved to {fileName}.bin")
+            

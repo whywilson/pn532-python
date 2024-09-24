@@ -5,14 +5,7 @@ from typing import Union
 import pn532_com
 from pn532_com import Response, DEBUG
 from pn532_utils import expect_response
-from pn532_enum import (
-    Command,
-    MifareCommand,
-    SlotNumber,
-    Status,
-    TagSenseType,
-    TagSpecificType,
-)
+from pn532_enum import Command, MifareCommand, Status
 from pn532_enum import ButtonPressFunction, ButtonType, MifareClassicDarksideStatus
 from pn532_enum import MfcKeyType, MfcValueBlockOperator
 from time import sleep
@@ -363,14 +356,13 @@ class Pn532CMD:
             block, type_value, key, bytes(resp[0]["uid"])
         )
         if not auth_result:
-            print("Auth failed")
-            return resp
+            return Response(Command.InDataExchange, Status.MF_ERR_AUTH)
         data = struct.pack("!BBB", 0x01, MifareCommand.MfReadBlock, block)
         resp = self.device.send_cmd_sync(Command.InDataExchange, data)
         if len(resp.data) >= 16 and resp.data[0] == Status.HF_TAG_OK:
             resp.parsed = resp.data[1:]
-            if(self.is_mf_trailler_block(block)):
-                if(type_value == MfcKeyType.A):
+            if self.is_mf_trailler_block(block):
+                if type_value == MfcKeyType.A:
                     resp.parsed = key + resp.parsed[6:]
                 else:
                     resp.parsed = resp.parsed[0:10] + key
@@ -391,7 +383,9 @@ class Pn532CMD:
         )
         if not auth_result:
             return Response(Command.InDataExchange, Status.HF_TAG_NO)
-        data = struct.pack("!BBB16s", 0x01, MifareCommand.MfWriteBlock, block, block_data)
+        data = struct.pack(
+            "!BBB16s", 0x01, MifareCommand.MfWriteBlock, block, block_data
+        )
         resp = self.device.send_cmd_sync(Command.InDataExchange, data)
         resp.parsed = resp.data[0] == Status.HF_TAG_OK
         return resp
