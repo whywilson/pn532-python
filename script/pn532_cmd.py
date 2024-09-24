@@ -304,6 +304,23 @@ class Pn532CMD:
                 return True
         return False
 
+    def isGen4(self, pwd = "00000000"):
+        options = {
+            "activate_rf_field": 1,
+            "wait_response": 1,
+            "append_crc": 0,
+            "auto_select": 0,
+            "keep_rf_field": 1,
+            "check_response_crc": 0,
+        }
+        command = f"CF{pwd}C6"
+        resp = self.hf14a_raw( options=options, resp_timeout_ms=1000, data=bytes.fromhex(command) )
+        if DEBUG:
+            print("isGen4:", resp.hex())
+        if len(resp) > 30:
+            return True
+        return False
+
     @expect_response(Status.SUCCESS)
     def hf15_scan(self):
         self.device.set_normal_mode()

@@ -690,11 +690,10 @@ examples:
     def is_hex(self, hex_string):
         return all(c in "0123456789abcdefABCDEF" for c in hex_string)
 
-    def get_block0(self, args):
+    def get_block0(self, uid, args):
         sak = 0x08
         atqa = 0x0400
         factory_info = 0xAABBCCDDEEFFFFFF
-        uid = self.str_to_bytes(args.u)
         block0 = args.blk0
         if block0 == None:
             if len(uid) != 4 and len(uid) != 7:
@@ -775,11 +774,57 @@ examples:
     def gen3_set_block0(self, block0: bytes):
         pass
 
-    def gen4_set_block0(self, block0: bytes, pwd: str):
-        pass
+    def gen4_set_block0(self, uid: bytes, block0: bytes, pwd = "00000000"):
+        tag_info = {}
+        resp = self.cmd.hf14a_scan()
+        self.device_com.halt()
+        if resp == None:
+            print("No tag found")
+            return resp
+        # print("Tag found", resp)
+        tag_info["uid"] = resp[0]["uid"].hex()
+        tag_info["atqa"] = resp[0]["atqa"].hex()
+        tag_info["sak"] = resp[0]["sak"].hex()
+        tag_info["data"] = []
+        options = {
+            "activate_rf_field": 1,
+            "wait_response": 1,
+            "append_crc": 0,
+            "auto_select": 0,
+            "keep_rf_field": 1,
+            "check_response_crc": 0,
+        }
+
+        if self.cmd.isGen4():
+            print("Found Gen4:", f"{tag_info['uid'].upper()}")
+            options = {
+                "activate_rf_field": 0,
+                "wait_response": 1,
+                "append_crc": 1,
+                "auto_select": 0,
+                "keep_rf_field": 1,
+                "check_response_crc": 0,
+            }
+            uid_length_symbol = "01" if len(uid) == 7 else "00"
+            resp = self.cmd.hf14a_raw(
+                options=options,
+                resp_timeout_ms=1000,
+                data=bytes.fromhex(f"CF{pwd}68{uid_length_symbol}"),
+            )
+            print(f"Writing block 0: {block0.hex().upper()}")
+            options["keep_rf_field"] = 0
+            resp = self.cmd.hf14a_raw(
+                options=options,
+                resp_timeout_ms=1000,
+                data=bytes.fromhex(f"CF{pwd}CD00{block0.hex()}")
+            )
+            print(f" - {CG}Write done.{C0}")
+        else:
+            print(f" - {CR}Tag is not Gen4 or wrong pwd.{C0}")
 
     def on_exec(self, args: argparse.Namespace):
-        block0 = self.get_block0(args)
+        uid = self.str_to_bytes(args.u)
+        block0 = self.get_block0(uid, args)
         if block0 == None:
             return
         gen = args.g
@@ -790,7 +835,7 @@ examples:
         elif gen == 3:
             self.gen3_set_block0(block0)
         elif gen == 4:
-            self.gen4_set_block0(block0, pwd=args.p)
+            self.gen4_set_block0(block0, uid, pwd=args.p)
 
 @hf_mf.command("rdbl")
 class HfMfRdbl(MF1AuthArgsUnit):
@@ -869,4 +914,3 @@ class HfMfCview(DeviceRequiredUnit):
                 for block in result["blocks"].values():
                     f.write(bytes.fromhex(block))
                 print(f"Dump saved to {fileName}.bin")
-            
