@@ -1,3 +1,4 @@
 pyserial==3.5
 colorama==0.4.6
 prompt-toolkit==3.0.39
+ndef==0.2

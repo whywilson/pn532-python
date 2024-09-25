@@ -111,8 +111,12 @@ class Pn532Com:
         self.send_data_queue.queue.clear()
 
     def set_normal_mode(self) -> response:
-        self.serial_instance.write([0x55, 0x55, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
-        response = self.send_cmd_sync(Command.SAMConfiguration, b"\x01")
+        self.serial_instance.write(bytes.fromhex("5500000000000000000000000000"))
+        response = self.send_cmd_sync(Command.SAMConfiguration, bytes.fromhex("01"))
+        return response
+
+    def in_release(self) -> response:
+        response = self.send_cmd_sync(Command.InRelease, bytes.fromhex("00"))
         return response
 
     # PN532Killer
@@ -300,8 +304,9 @@ class Pn532Com:
                             del self.wait_response_map[data_cmd]
                             fn_call(data_cmd, data_status, data_response)
                     else:
-                        print(f"No task waiting for process: {data_cmd}")
-
+                        if DEBUG:
+                            print(f"No task waiting for process: {data_cmd}")
+                        pass
                     data_position = 0
                     data_buffer.clear()
                     continue
