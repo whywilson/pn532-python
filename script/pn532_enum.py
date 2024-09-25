@@ -31,7 +31,7 @@ class Command(enum.IntEnum):
 @enum.unique
 class Pn532KillerCommand(enum.IntEnum):
     getEmulatorData = 0x1C
-    writeEmulatorData = 0x1E
+    setEmulatorData = 0x1E
     checkPn532Killer = 0xAA
     SetWorkMode = 0xAC
     GetSnifferLog = 0x20

@@ -3,9 +3,10 @@ import ctypes
 from typing import Union
 
 import pn532_com
+from unit.calc import crc16A
 from pn532_com import Response, DEBUG
 from pn532_utils import expect_response
-from pn532_enum import Command, MifareCommand, Status
+from pn532_enum import Command, Pn532KillerCommand, MifareCommand, Status
 from pn532_enum import ButtonPressFunction, ButtonType, MifareClassicDarksideStatus
 from pn532_enum import MfcKeyType, MfcValueBlockOperator
 from time import sleep
@@ -251,7 +252,7 @@ class Pn532CMD:
             sleep(0.1)
 
         if cs.append_crc:
-            data = bytes(data) + self.crc16A(bytes(data))
+            data = bytes(data) + crc16A(bytes(data))
         resp = self.device.send_cmd_sync(Command.InCommunicateThru, data, timeout=1)
         resp.parsed = resp.data
         resp.status = resp.data[0:1]
@@ -267,17 +268,6 @@ class Pn532CMD:
                 f"Send: {bytes(data).hex().upper()} Status: {resp.status.hex().upper()}, Data: {resp.parsed.hex().upper()}"
             )
         return resp
-
-    def crc16A(self, data: bytes) -> bytes:
-        crc = 0x6363  # Initial value for CRC-A
-
-        for b in data:
-            ch = b ^ (crc & 0xFF)
-            ch = (ch ^ (ch << 4)) & 0xFF
-            crc = (crc >> 8) ^ (ch << 8) ^ (ch << 3) ^ (ch >> 4)
-
-        crc = crc & 0xFFFF
-        return crc.to_bytes(2, byteorder="little")
 
     def isGen1a(self):
         options = {
@@ -465,6 +455,44 @@ class Pn532CMD:
         resp.parsed = f"Ver.{resp.data.hex()}"
         return resp
 
+    @expect_response(Status.SUCCESS)
+    def hf_sniff_set_uid(self, block0: bytes):
+        """
+        Set block0 for sniffing
+
+        :param block0: 16 bytes
+        :return:
+        """
+        resp1 = self.upload_data_block(slot = 0x11,data = block0)
+        resp2 = self.upload_data_block_done(slot = 0x11)
+        return resp1
+
+    def upload_data_block(self, type = 1, slot = 0, block = 0, data : bytes = b""):
+        """
+        Upload data block
+
+        :param type: 1 byte
+        :param slot: slot number, 1 byte
+        :param block: block number, 2 bytes
+        :param data: data
+        :return:
+        """
+        data = struct.pack("!BBH", type, slot, block) + data
+        resp = self.device.send_cmd_sync(Pn532KillerCommand.setEmulatorData, data)
+        resp.parsed = resp.data[-1]
+        return resp
+
+    @expect_response(Status.SUCCESS)
+    def upload_data_block_done(self, type = 1, slot = 0):
+        """
+        Upload data block done
+
+        :param type: 1 byte
+        :param slot: slot number, 1 byte
+        :param block: block number, 0xFFFF
+        :param data: data 00000000000000000000000000000000
+        """
+        return self.upload_data_block(type, slot, 0xFFFF, b"\x00" * 16)
 
 def test_fn():
     # connect to pn532

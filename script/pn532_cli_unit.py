@@ -11,6 +11,8 @@ import serial.tools.list_ports
 import json
 import threading
 import struct
+from unit.calc import str_to_bytes
+from unit.calc import is_hex
 from multiprocessing import Pool, cpu_count
 from typing import Union
 from pathlib import Path
@@ -62,6 +64,7 @@ hw_mode = hw.subgroup("mode", "Mode-related commands")
 hf = root.subgroup("hf", "High-frequency commands")
 hf_14a = hf.subgroup("14a", "ISO 14443-A commands")
 hf_mf = hf.subgroup("mf", "MIFARE Classic commands")
+hf_sniff = hf.subgroup("sniff", "Sniffer commands")
 
 hf_14b = hf.subgroup("14b", "ISO 14443-B commands")
 hf_15 = hf.subgroup("15", "ISO 15693 commands")
@@ -628,12 +631,82 @@ class HwVersion(ReaderRequiredUnit):
         else:
             print("Failed to get firmware version")
 
+@hf_sniff.command("setuid")
+class HfSniffSetUid(ReaderRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set UID of sniffer slot"
+        parser.add_argument(
+            "-u",
+            type=str,
+            required=False,
+            help="UID to set (4 bytes)",
+            default="11223344",
+        )
+        # add block0
+        parser.add_argument(
+            "--blk0",
+            metavar="<hex>",
+            type=str,
+            required=False,
+            help="Block 0 (16 bytes)",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        uid = args.u.upper()
+        if not re.match(r"^[a-fA-F0-9]{8}$", uid) and len(uid) != 8:
+            print("UID must be 4 bytes hex")
+            return
+        if args.blk0 is not None:
+            if not re.match(r"^[a-fA-F0-9]{32}$", args.blk0):
+                print("Block0 must be 16 bytes hex")
+                return
+            block0 = bytes.fromhex(args.blk0)
+        else:
+            block0 = self.get_block0(bytes.fromhex(uid), args)
+        if not is_hex(block0, 16):
+            print("Invalid block")
+            return
+        resp = self.cmd.hf_sniff_set_uid(block0)
+        if resp == 0:
+            print(f" - {CG}Set UID to {uid} {C0}")
+        else:
+            print(f" - {CR}Failed to set UID{C0}")
+
+    def get_block0(self, uid, args):
+        sak = 0x08
+        atqa = 0x0400
+        factory_info = 0xAABBCCDDEEFFFFFF
+        block0 = args.blk0
+        if block0 == None:
+            if len(uid) != 4 and len(uid) != 7:
+                print(f"{CR}UID needs to be 4 bytes or 7 bytes{C0}")
+                return
+            bcc = 0
+            if len(uid) == 4:
+                bcc = uid[0] ^ uid[1] ^ uid[2] ^ uid[3]
+            uid_hex = "".join(format(x, "02x") for x in uid)
+            block0 = f"{uid_hex}{format(bcc, '02x')}{format(sak, '02x')}{format(atqa, '04x')}{format(factory_info, '016x')}"
+        else:
+            if is_hex(block0) == False:
+                print(f"{CR}Block0 needs to be hex{C0}")
+                return
+            if len(block0) != 32:
+                print(f"{CR}Block0 needs to be 16 bytes{C0}")
+                return
+
+            uid = str_to_bytes(block0[0:8])
+            bcc = 0
+            bcc = uid[0] ^ uid[1] ^ uid[2] ^ uid[3]
+            # check if bcc is valid on the block0
+            if block0[8:10] != format(bcc, "02x"):
+                print(f"{CR}Invalid BCC{C0}")
+                return
+        return str_to_bytes(block0)
 
 @hf_mf.command("setuid")
 class HfMfSetUid(ReaderRequiredUnit):
-    # def before_exec(self, args: argparse.Namespace):
-    #     return True
-
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.formatter_class = argparse.RawDescriptionHelpFormatter
@@ -680,16 +753,6 @@ examples:
 """
         return parser
 
-    def str_to_bytes(self, data):
-        try:
-            data = data.replace(" ", "")
-            return bytes.fromhex(data)
-        except ValueError:
-            raise ValueError("Not valid hex")
-
-    def is_hex(self, hex_string):
-        return all(c in "0123456789abcdefABCDEF" for c in hex_string)
-
     def get_block0(self, uid, args):
         sak = 0x08
         atqa = 0x0400
@@ -705,21 +768,21 @@ examples:
             uid_hex = "".join(format(x, "02x") for x in uid)
             block0 = f"{uid_hex}{format(bcc, '02x')}{format(sak, '02x')}{format(atqa, '04x')}{format(factory_info, '016x')}"
         else:
-            if self.is_hex(block0) == False:
+            if is_hex(block0) == False:
                 print(f"{CR}Block0 needs to be hex{C0}")
                 return
             if len(block0) != 32:
                 print(f"{CR}Block0 needs to be 16 bytes{C0}")
                 return
 
-            uid = self.str_to_bytes(block0[0:8])
+            uid = str_to_bytes(block0[0:8])
             bcc = 0
             bcc = uid[0] ^ uid[1] ^ uid[2] ^ uid[3]
             # check if bcc is valid on the block0
             if block0[8:10] != format(bcc, "02x"):
                 print(f"{CR}Invalid BCC{C0}")
                 return
-        return self.str_to_bytes(block0)
+        return str_to_bytes(block0)
 
     def gen1a_set_block0(self, block0: bytes):
         tag_info = {}
@@ -823,7 +886,7 @@ examples:
             print(f" - {CR}Tag is not Gen4 or wrong pwd.{C0}")
 
     def on_exec(self, args: argparse.Namespace):
-        uid = self.str_to_bytes(args.u)
+        uid = str_to_bytes(args.u)
         block0 = self.get_block0(uid, args)
         if block0 == None:
             return
