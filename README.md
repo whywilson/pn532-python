@@ -1,5 +1,6 @@
 A Python-based CLI for PN532 and PN532Killer.
 
+![PN532Killer CLI](assets/pn532killer-cli.jpg)
 ## Hardware
 - PN532 with USB Serial Chip on HSU Mode
 - [All-in-one PN532](https://shop.mtoolstec.com/product/mtools-all-in-one-pn532)  

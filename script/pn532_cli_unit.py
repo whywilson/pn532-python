@@ -504,7 +504,6 @@ examples/notes:
         else:
             print(f" [*] {CY}No response{C0}")
 
-
 @hf_15.command("scan")
 class HF15Scan(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:

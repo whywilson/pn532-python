@@ -50,6 +50,8 @@ PN532Capabilities = [
     "HWVersion",
     "HWWakeUp",
     "HWRaw",
+    "HF14AScan",
+    "HF14ARaw",
     "HfMfSetUid",
     "HfMfRdbl",
     "HfMfWrbl",

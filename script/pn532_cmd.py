@@ -2,7 +2,6 @@ import struct
 import ctypes
 from typing import Union
 import threading
-import msvcrt
 
 import pn532_com
 from unit.calc import crc16A
@@ -22,6 +21,8 @@ from multiprocessing import Pool, cpu_count
 from typing import Union
 from pathlib import Path
 from platform import uname
+import sys
+import select
 import serial.tools.list_ports
 
 class Pn532CMD:
@@ -638,12 +639,13 @@ class Pn532CMD:
     def wait_for_enter(self):
         print("Press Enter to stop...")
         while not self.stop_flag:
-            if msvcrt.kbhit():
-                key = msvcrt.getch()
-                if key == b"\r":  # 检测回车键
-                    self.stop_flag = True
-                    print("Stopping...")
-                    break
+            while True:
+                if select.select([sys.stdin], [], [], 0.1)[0]:
+                    key = sys.stdin.read(1)
+                    if key == "\n":  # 检测回车键
+                        self.stop_flag = True
+                        print("Stopping...")
+                        break
             sleep(0.1)
 
 def test_fn():
