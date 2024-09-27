@@ -1,20 +1,23 @@
 import struct
 import ctypes
 from typing import Union
+import threading
+import msvcrt
 
 import pn532_com
 from unit.calc import crc16A
 from pn532_com import Response, DEBUG
 from pn532_utils import expect_response
-from pn532_enum import Command, Pn532KillerCommand, MifareCommand, Status
+from pn532_enum import Command, MifareCommand, ApduCommand, TagFile, NdefCommand, Status
+from pn532_enum import Pn532KillerCommand
+
 from pn532_enum import ButtonPressFunction, ButtonType, MifareClassicDarksideStatus
 from pn532_enum import MfcKeyType, MfcValueBlockOperator
 from time import sleep
 from pn532_utils import CC, CB, CG, C0, CY, CR
 import os
 import subprocess
-import argparse
-import timeit
+import ndef
 from multiprocessing import Pool, cpu_count
 from typing import Union
 from pathlib import Path
@@ -34,74 +37,6 @@ class Pn532CMD:
         :param pn532: pn532 instance, @see pn532_device.Pn532
         """
         self.device = pn532
-
-    @expect_response(Status.SUCCESS)
-    def get_app_version(self):
-        """
-        Get firmware version number(application)
-        """
-        resp = self.device.send_cmd_sync(Command.GET_APP_VERSION)
-        if resp.status == Status.SUCCESS:
-            resp.parsed = struct.unpack("!BB", resp.data)
-        # older protocol, must upgrade!
-        if resp.status == 0 and resp.data == b"\x00\x01":
-            print("Pn532 does not understand new protocol. Please update firmware")
-            return pn532_com.Response(
-                cmd=Command.GET_APP_VERSION, status=Status.NOT_IMPLEMENTED
-            )
-        return resp
-
-    @expect_response(Status.SUCCESS)
-    def get_device_chip_id(self):
-        """
-        Get device chip id
-        """
-        resp = self.device.send_cmd_sync(Command.GET_DEVICE_CHIP_ID)
-        if resp.status == Status.SUCCESS:
-            resp.parsed = resp.data.hex()
-        return resp
-
-    @expect_response(Status.SUCCESS)
-    def get_device_address(self):
-        """
-        Get device address
-        """
-        resp = self.device.send_cmd_sync(Command.GET_DEVICE_ADDRESS)
-        if resp.status == Status.SUCCESS:
-            resp.parsed = resp.data.hex()
-        return resp
-
-    @expect_response(Status.SUCCESS)
-    def get_git_version(self):
-        resp = self.device.send_cmd_sync(Command.GET_GIT_VERSION)
-        if resp.status == Status.SUCCESS:
-            resp.parsed = resp.data.decode("utf-8")
-        return resp
-
-    @expect_response(Status.SUCCESS)
-    def get_device_mode(self):
-        resp = self.device.send_cmd_sync(Command.GET_DEVICE_MODE)
-        if resp.status == Status.SUCCESS:
-            (resp.parsed,) = struct.unpack("!?", resp.data)
-        return resp
-
-    def is_device_reader_mode(self) -> bool:
-        """
-            Get device mode, reader, emulator or sniffer.
-
-        :return: True is reader mode, else tag mode
-        """
-        # return self.get_device_mode()
-        return True
-
-    # Note: Will return NOT_IMPLEMENTED if one tries to set reader mode on Lite
-    @expect_response(Status.SUCCESS)
-    def change_device_mode(self, mode):
-        data = struct.pack("!B", mode)
-        return self.device.send_cmd_sync(Command.CHANGE_DEVICE_MODE, data)
-
-    def set_device_reader_mode(self, reader_mode: bool = True):
-        self.device
 
     @expect_response(Status.SUCCESS)
     def hf14a_scan(self):
@@ -135,6 +70,7 @@ class Pn532CMD:
                         "uid": uid,
                     }
                 )
+                break
             resp.parsed = data
         return resp
 
@@ -294,7 +230,7 @@ class Pn532CMD:
                 return True
         return False
 
-    def isGen4(self, pwd = "00000000"):
+    def isGen4(self, pwd="00000000"):
         options = {
             "activate_rf_field": 1,
             "wait_response": 1,
@@ -304,7 +240,9 @@ class Pn532CMD:
             "check_response_crc": 0,
         }
         command = f"CF{pwd}C6"
-        resp = self.hf14a_raw( options=options, resp_timeout_ms=1000, data=bytes.fromhex(command) )
+        resp = self.hf14a_raw(
+            options=options, resp_timeout_ms=1000, data=bytes.fromhex(command)
+        )
         if DEBUG:
             print("isGen4:", resp.hex())
         if len(resp) > 30:
@@ -495,6 +433,221 @@ class Pn532CMD:
             "!BBH16s", type, slot, 0xFFFF, b"\x00" * 16
         )
         return self.device.send_cmd_sync(Pn532KillerCommand.setEmulatorData, data)
+    
+    @expect_response(Status.SUCCESS)
+    def ntag_emulator(self, url: str):
+        input_thread = threading.Thread(target=self.wait_for_enter)
+        input_thread.start()
+        resp_tginitastarget = self.device.send_cmd_sync(
+            Command.TgInitAsTarget,
+            bytes.fromhex(
+                "0408001122336001FEA2A3A4A5A6A7C0C1C2C3C4C5C6C7FFFFAA9988776655443322110000"
+            ),
+        )
+        print(f"TgInitAsTarget = {resp_tginitastarget.data.hex().upper()}")
+        compatibility_container = [
+            0,
+            0x0F,
+            0x20,
+            0,
+            0x54,
+            0,
+            0xFF,
+            0x04,
+            0x06,
+            0xE1,
+            0x04,
+            ((NdefCommand.NDEF_MAX_LENGTH & 0xFF00) >> 8),
+            (NdefCommand.NDEF_MAX_LENGTH & 0xFF),
+            0x00,
+            0x00,
+        ]
+        current_file = TagFile.NONE
+        while not self.stop_flag:
+            resp = self.device.send_cmd_sync(Command.TgGetData)
+            if len(resp.data) == 0:
+                self.device.in_release()
+                sleep(0.01)
+                continue
+            if len(resp.data) > 0:
+                if resp.data[0] == 0x29 or resp.data[0] == 0x25:
+                    resp_tginitastarget = self.device.send_cmd_sync(
+                        Command.TgInitAsTarget,
+                        bytes.fromhex(
+                            "0408001122336001FEA2A3A4A5A6A7C0C1C2C3C4C5C6C7FFFFAA9988776655443322110000"
+                        ),
+                    )
+                    print(
+                        f"TgInitAsTarget restarted = {resp_tginitastarget.data.hex().upper()}"
+                    )
+                    continue
+            if len(resp.data) < 5:
+                sleep(0.01)
+                continue
+            rbuf = resp.data[1:]
+            print(f"TgGetData => {rbuf.hex().upper()}")
+            if len(rbuf) < 5:
+                continue
+
+            ins = rbuf[ApduCommand.C_APDU_INS]
+            p1 = rbuf[ApduCommand.C_APDU_P1]
+            p2 = rbuf[ApduCommand.C_APDU_P2]
+            p1p2_length = (p1 << 8) | p2
+            lc = rbuf[ApduCommand.C_APDU_P2 + 1]
+            if DEBUG: 
+                print(
+                    f"ins = {hex(ins)}, p1 = {hex(p1)}, p2 = {hex(p2)}, p1p2_length = {hex(p1p2_length)},  lc = {hex(lc)}"
+                )
+            if ins == ApduCommand.ISO7816_SELECT_FILE:
+                if DEBUG:
+                    print("ISO7816_SELECT_FILE")
+                if p1 == ApduCommand.C_APDU_P1_SELECT_BY_ID:
+                    if DEBUG:
+                        print("C_APDU_P1_SELECT_BY_ID")
+                    if p2 != 0x0C:
+                        if DEBUG:
+                            print("C_APDU_P2 != 0x0C")
+                        wbuf = [
+                            ApduCommand.R_APDU_SW1_COMMAND_COMPLETE,
+                            ApduCommand.R_APDU_SW2_COMMAND_COMPLETE,
+                        ]
+                    elif (
+                        lc == 0x02
+                        and rbuf[ApduCommand.C_APDU_DATA] == 0xE1
+                        and (
+                            rbuf[ApduCommand.C_APDU_DATA + 1] == 0x03
+                            or rbuf[ApduCommand.C_APDU_DATA + 1] == 0x04
+                        )
+                    ):
+                        if rbuf[ApduCommand.C_APDU_DATA + 1] == 0x03:
+                            current_file = TagFile.CC
+                        elif rbuf[ApduCommand.C_APDU_DATA + 1] == 0x04:
+                            current_file = TagFile.NDEF
+                        if DEBUG:
+                            print("current_file = ", current_file)
+
+                        wbuf = [
+                            ApduCommand.R_APDU_SW1_COMMAND_COMPLETE,
+                            ApduCommand.R_APDU_SW2_COMMAND_COMPLETE,
+                        ]
+                    else:
+                        wbuf = [
+                            ApduCommand.R_APDU_SW1_NDEF_TAG_NOT_FOUND,
+                            ApduCommand.R_APDU_SW2_NDEF_TAG_NOT_FOUND,
+                        ]
+                        if DEBUG:
+                            print("NDEF tag not found")
+                if p1 == ApduCommand.C_APDU_P1_SELECT_BY_NAME:
+                    if DEBUG:
+                        print("C_APDU_P1_SELECT_BY_NAME")
+                    if list(rbuf[3:12]) == NdefCommand.APPLICATION_NAME_V2:
+                        wbuf = [
+                            ApduCommand.R_APDU_SW1_COMMAND_COMPLETE,
+                            ApduCommand.R_APDU_SW2_COMMAND_COMPLETE,
+                        ]
+                        if DEBUG:
+                            print(f"application = {rbuf[3:12].hex().upper()}")
+                    else:
+                        wbuf = [
+                            ApduCommand.R_APDU_SW1_FUNCTION_NOT_SUPPORTED,
+                            ApduCommand.R_APDU_SW2_FUNCTION_NOT_SUPPORTED,
+                        ]
+                        if DEBUG:
+                            print("function not supported")
+            elif ins == ApduCommand.ISO7816_READ_BINARY:
+                if current_file == TagFile.NONE:
+                    wbuf = [
+                        ApduCommand.R_APDU_SW1_NDEF_TAG_NOT_FOUND,
+                        ApduCommand.R_APDU_SW2_NDEF_TAG_NOT_FOUND,
+                    ]
+                    if DEBUG:
+                        print("NDEF tag not found")
+                elif current_file == TagFile.CC:
+                    if p1p2_length > NdefCommand.NDEF_MAX_LENGTH:
+                        wbuf = [
+                            ApduCommand.R_APDU_SW1_END_OF_FILE_BEFORE_REACHED_LE_BYTES,
+                            ApduCommand.R_APDU_SW2_END_OF_FILE_BEFORE_REACHED_LE_BYTES,
+                        ]
+                        if DEBUG:
+                            print("CC: End of file before reached LE bytes")
+                    else:
+                        # set deny
+                        compatibility_container[14] = 0xFF
+                        # C: memcpy(rbuf, compatibility_container + p1p2_length, lc)
+                        wbuf = compatibility_container[p1p2_length:]
+                        data = [
+                            ApduCommand.R_APDU_SW1_COMMAND_COMPLETE,
+                            ApduCommand.R_APDU_SW2_COMMAND_COMPLETE,
+                        ]
+                        wbuf += bytes(data)
+                        if DEBUG:
+                            print("CC data set")
+                elif current_file == TagFile.NDEF:
+                    if p1p2_length > NdefCommand.NDEF_MAX_LENGTH:
+                        wbuf = [
+                            ApduCommand.R_APDU_SW1_END_OF_FILE_BEFORE_REACHED_LE_BYTES,
+                            ApduCommand.R_APDU_SW2_END_OF_FILE_BEFORE_REACHED_LE_BYTES,
+                        ]
+                        if DEBUG:
+                            print("NDEF: End of file before reached LE bytes")
+                    else:
+                        payload = ndef.ndef._url_ndef_abbrv(url)
+                        uri_record = (
+                            ndef.TNF_WELL_KNOWN,
+                            ndef.RTD_URI,
+                            "".encode("utf-8"),
+                            payload,
+                        )
+                        uri_message = ndef.new_message(uri_record)
+                        ndef_bytes = list(uri_message.to_buffer())
+                        if lc == 0x02:
+                            # turn NdefCommand.NDEF_MAX_LENGTH to 2 bytes then add R_APDU_SW1_COMMAND_COMPLETE R_APDU_SW2_COMMAND_COMPLETE
+                            wbuf = list(len(ndef_bytes).to_bytes(2, byteorder="big"))
+                            data = [
+                                ApduCommand.R_APDU_SW1_COMMAND_COMPLETE,
+                                ApduCommand.R_APDU_SW2_COMMAND_COMPLETE,
+                            ]
+                            wbuf += bytes(data)
+                            if DEBUG:
+                                print("NDEF_MAX_LENGTH set")
+                        else:
+                            wbuf = ndef_bytes
+                            wbuf += bytes(data)
+                            if DEBUG:
+                                print("NDEF data set")
+                else:
+                    if DEBUG:
+                        print("Command not supported!")
+                    wbuf = [
+                        ApduCommand.R_APDU_SW1_FUNCTION_NOT_SUPPORTED,
+                        ApduCommand.R_APDU_SW2_FUNCTION_NOT_SUPPORTED,
+                    ]
+            elif ins == ApduCommand.ISO7816_UPDATE_BINARY:
+                wbuf = [
+                    ApduCommand.R_APDU_SW1_FUNCTION_NOT_SUPPORTED,
+                    ApduCommand.R_APDU_SW2_FUNCTION_NOT_SUPPORTED,
+                ]
+            resp = self.device.send_cmd_sync(Command.TgSetData, wbuf)
+            print(f"TgSetData {bytes(wbuf).hex().upper()} => {resp.data.hex().upper()}")
+            if resp.status != Status.SUCCESS:
+                self.device.in_release()
+                continue
+            if self.stop_flag:
+                break
+        self.device.set_normal_mode()
+        return resp
+
+    stop_flag = False
+    def wait_for_enter(self):
+        print("Press Enter to stop...")
+        while not self.stop_flag:
+            if msvcrt.kbhit():
+                key = msvcrt.getch()
+                if key == b"\r":  # 检测回车键
+                    self.stop_flag = True
+                    print("Stopping...")
+                    break
+            sleep(0.1)
 
 def test_fn():
     # connect to pn532

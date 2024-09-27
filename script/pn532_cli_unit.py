@@ -73,6 +73,7 @@ lf = root.subgroup("lf", "Low Frequency commands")
 lf_em = lf.subgroup("em", "EM commands")
 lf_em_410x = lf_em.subgroup("410x", "EM410x commands")
 
+ntag = root.subgroup("ntag", "NTAG commands")
 
 class BaseCLIUnit:
     def __init__(self):
@@ -207,14 +208,7 @@ class ReaderRequiredUnit(DeviceRequiredUnit):
 
     def before_exec(self, args: argparse.Namespace):
         if super().before_exec(args):
-            ret = self.cmd.is_device_reader_mode()
-            if ret:
-                return True
-            else:
-                self.cmd.set_device_reader_mode(True)
-                print("Switch to {  Reader  } mode successfully.")
-                return True
-        return False
+            return True
 
 
 class MF1SetUidArgsUnit(ReaderRequiredUnit):
@@ -552,6 +546,16 @@ class RootExit(BaseCLIUnit):
         self.device_com.close()
         sys.exit(996)
 
+@hw.command("wakeup")
+class HWWakeUp(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Wake up device"
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        self.device_com.set_normal_mode()
+        print("Device wake up")
 
 @hw.command("connect")
 class HWConnect(BaseCLIUnit):
@@ -973,3 +977,24 @@ class HfMfCview(DeviceRequiredUnit):
                 for block in result["blocks"].values():
                     f.write(bytes.fromhex(block))
                 print(f"Dump saved to {fileName}.bin")
+
+@ntag.command("emulate")
+class NtagEmulator(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Start NTAG emulating"
+        parser.add_argument(
+            "--uri", type=str, required=False, help="URI to emulate", default="https://pn532killer.com"
+        )
+        parser.epilog = (
+            parser.epilog
+        ) = """
+examples:
+    ntag emulate --uri https://pn532killer.com
+"""
+
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        self.device_com.set_normal_mode()
+        self.cmd.ntag_emulator(url=args.uri)

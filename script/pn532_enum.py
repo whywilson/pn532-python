@@ -26,7 +26,9 @@ class Command(enum.IntEnum):
     InRelease = 0x52
     InSelect = 0x54
     InAutoPoll = 0x60
-
+    TgInitAsTarget = 0x8C
+    TgGetData = 0x86
+    TgSetData = 0x8E
 
 @enum.unique
 class Pn532KillerCommand(enum.IntEnum):
@@ -37,11 +39,45 @@ class Pn532KillerCommand(enum.IntEnum):
     GetSnifferLog = 0x20
     ClearSnifferLog = 0x22 
 
-
 @enum.unique
 class MifareCommand(enum.IntEnum):
     MfReadBlock = 0x30
     MfWriteBlock = 0xA0
+
+class ApduCommand():
+    C_APDU_CLA = 0
+    C_APDU_INS = 1
+    C_APDU_P1 = 2
+    C_APDU_P2 = 3
+    C_APDU_LC = 4
+    C_APDU_DATA = 5
+    C_APDU_P1_SELECT_BY_ID = 0x00
+    C_APDU_P1_SELECT_BY_NAME = 0x04
+
+    R_APDU_SW1_COMMAND_COMPLETE = 0x90
+    R_APDU_SW2_COMMAND_COMPLETE = 0x00
+    R_APDU_SW1_NDEF_TAG_NOT_FOUND = 0x6A
+    R_APDU_SW2_NDEF_TAG_NOT_FOUND = 0x82
+    R_APDU_SW1_FUNCTION_NOT_SUPPORTED = 0x6A
+    R_APDU_SW2_FUNCTION_NOT_SUPPORTED = 0x81
+    R_APDU_SW1_MEMORY_FAILURE = 0x65
+    R_APDU_SW2_MEMORY_FAILURE = 0x81
+    R_APDU_SW1_END_OF_FILE_BEFORE_REACHED_LE_BYTES = 0x62
+    R_APDU_SW2_END_OF_FILE_BEFORE_REACHED_LE_BYTES = 0x82
+
+    ISO7816_SELECT_FILE  = 0xA4
+    ISO7816_READ_BINARY  = 0xB0
+    ISO7816_UPDATE_BINARY  = 0xD6
+
+class NdefCommand:
+    APPLICATION_NAME_V2 = [0, 0x07, 0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01]
+    NDEF_MAX_LENGTH = 0x64
+
+@enum.unique
+class TagFile(enum.IntEnum):
+    NONE = 0
+    CC = 1
+    NDEF = 2
 
 @enum.unique
 class Status(enum.IntEnum):
