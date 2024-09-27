@@ -24,9 +24,6 @@ from pathlib import Path
 from platform import uname
 import serial.tools.list_ports
 
-CURRENT_VERSION_SETTINGS = 5
-
-
 class Pn532CMD:
     """
     Pn532 cmd function

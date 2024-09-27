@@ -1,5 +1,6 @@
 import enum
 
+
 @enum.unique
 class Command(enum.IntEnum):
     Diagnose = 0x00
@@ -30,6 +31,7 @@ class Command(enum.IntEnum):
     TgGetData = 0x86
     TgSetData = 0x8E
 
+
 @enum.unique
 class Pn532KillerCommand(enum.IntEnum):
     getEmulatorData = 0x1C
@@ -37,14 +39,37 @@ class Pn532KillerCommand(enum.IntEnum):
     checkPn532Killer = 0xAA
     SetWorkMode = 0xAC
     GetSnifferLog = 0x20
-    ClearSnifferLog = 0x22 
+    ClearSnifferLog = 0x22
+
+BasicCapabilities = [
+    "RootExit",
+]
+
+PN532Capabilities = [
+    "HWConnect",
+    "HWVersion",
+    "HWWakeUp",
+    "HWRaw",
+    "HfMfSetUid",
+    "HfMfRdbl",
+    "HfMfWrbl",
+    "HfMfCview",
+    "NtagEmulate",
+]
+PN532KillerCapabilities = [
+    "HWModeReader",
+    "HWModeSniffer",
+    "HWModeEmulator",
+    "HF15Scan",
+    "HfSniffSetUid",
+]
 
 @enum.unique
 class MifareCommand(enum.IntEnum):
     MfReadBlock = 0x30
     MfWriteBlock = 0xA0
 
-class ApduCommand():
+class ApduCommand:
     C_APDU_CLA = 0
     C_APDU_INS = 1
     C_APDU_P1 = 2
@@ -65,13 +90,15 @@ class ApduCommand():
     R_APDU_SW1_END_OF_FILE_BEFORE_REACHED_LE_BYTES = 0x62
     R_APDU_SW2_END_OF_FILE_BEFORE_REACHED_LE_BYTES = 0x82
 
-    ISO7816_SELECT_FILE  = 0xA4
-    ISO7816_READ_BINARY  = 0xB0
-    ISO7816_UPDATE_BINARY  = 0xD6
+    ISO7816_SELECT_FILE = 0xA4
+    ISO7816_READ_BINARY = 0xB0
+    ISO7816_UPDATE_BINARY = 0xD6
+
 
 class NdefCommand:
     APPLICATION_NAME_V2 = [0, 0x07, 0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01]
     NDEF_MAX_LENGTH = 0x64
+
 
 @enum.unique
 class TagFile(enum.IntEnum):
@@ -79,18 +106,19 @@ class TagFile(enum.IntEnum):
     CC = 1
     NDEF = 2
 
+
 @enum.unique
 class Status(enum.IntEnum):
-    TimeoutError = -1     
-    HF_TAG_OK = 0x00     # IC card operation is successful
-    HF_TAG_NO = 0x01     # IC card not found
-    HF_ERR_STAT = 0x02    # Abnormal IC card communication
-    HF_ERR_CRC = 0x03     # IC card communication verification abnormal
+    TimeoutError = -1
+    HF_TAG_OK = 0x00  # IC card operation is successful
+    HF_TAG_NO = 0x01  # IC card not found
+    HF_ERR_STAT = 0x02  # Abnormal IC card communication
+    HF_ERR_CRC = 0x03  # IC card communication verification abnormal
     HF_COLLISION = 0x04  # IC card conflict
-    HF_ERR_BCC = 0x05     # IC card BCC error
-    MF_ERR_AUTH = 0x06    # MF card verification failed
+    HF_ERR_BCC = 0x05  # IC card BCC error
+    MF_ERR_AUTH = 0x06  # MF card verification failed
     HF_ERR_PARITY = 0x07  # IC card parity error
-    HF_ERR_ATS = 0x08     # ATS should be present but card NAKed, or ATS too large
+    HF_ERR_ATS = 0x08  # ATS should be present but card NAKed, or ATS too large
 
     # Some operations with low frequency cards succeeded!
     LF_TAG_OK = 0x40
@@ -182,10 +210,12 @@ class TagSenseType(enum.IntEnum):
     # 13.56 MHz
     HF = 2
 
+
 @enum.unique
 class MfcKeyType(enum.IntEnum):
     A = 0x60
     B = 0x61
+
 
 @enum.unique
 class TagSpecificType(enum.IntEnum):
@@ -262,20 +292,29 @@ class TagSpecificType(enum.IntEnum):
 
     @staticmethod
     def list(exclude_meta=True):
-        return [t for t in TagSpecificType
-                if (t > TagSpecificType.OLD_TAG_TYPES_END and
-                    t != TagSpecificType.TAG_TYPES_LF_END)
-                or not exclude_meta]
+        return [
+            t
+            for t in TagSpecificType
+            if (
+                t > TagSpecificType.OLD_TAG_TYPES_END
+                and t != TagSpecificType.TAG_TYPES_LF_END
+            )
+            or not exclude_meta
+        ]
 
     @staticmethod
     def list_hf():
-        return [t for t in TagSpecificType.list()
-                if (t > TagSpecificType.TAG_TYPES_LF_END)]
+        return [
+            t for t in TagSpecificType.list() if (t > TagSpecificType.TAG_TYPES_LF_END)
+        ]
 
     @staticmethod
     def list_lf():
-        return [t for t in TagSpecificType.list()
-                if (TagSpecificType.UNDEFINED < t < TagSpecificType.TAG_TYPES_LF_END)]
+        return [
+            t
+            for t in TagSpecificType.list()
+            if (TagSpecificType.UNDEFINED < t < TagSpecificType.TAG_TYPES_LF_END)
+        ]
 
     def __str__(self):
         if self == TagSpecificType.UNDEFINED:
@@ -328,9 +367,11 @@ class MifareClassicWriteMode(enum.IntEnum):
 
     @staticmethod
     def list(exclude_meta=True):
-        return [m for m in MifareClassicWriteMode
-                if m != MifareClassicWriteMode.SHADOW_REQ
-                or not exclude_meta]
+        return [
+            m
+            for m in MifareClassicWriteMode
+            if m != MifareClassicWriteMode.SHADOW_REQ or not exclude_meta
+        ]
 
     def __str__(self):
         if self == MifareClassicWriteMode.NORMAL:
@@ -408,8 +449,8 @@ class AnimationMode(enum.IntEnum):
 
 @enum.unique
 class ButtonType(enum.IntEnum):
-    A = ord('A')
-    B = ord('B')
+    A = ord("A")
+    B = ord("B")
 
 
 @enum.unique
@@ -438,6 +479,7 @@ class ButtonPressFunction(enum.IntEnum):
         elif self == ButtonPressFunction.BATTERY:
             return "Show Battery Level"
         return "None"
+
 
 @enum.unique
 class MfcValueBlockOperator(enum.IntEnum):

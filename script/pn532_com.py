@@ -6,6 +6,7 @@ from urllib import response
 import serial
 from typing import Union
 from pn532_enum import Command, Pn532KillerCommand, Status
+from pn532_enum import BasicCapabilities, PN532Capabilities, PN532KillerCapabilities
 from pn532_utils import CC, CB, CG, C0, CY, CR
 
 DEBUG = False
@@ -43,8 +44,7 @@ class Pn532Com:
         self.wait_response_map = {}
         self.event_closing = threading.Event()
 
-    # default device name
-    device_name = "PN532"
+    device_name = "Unknown"
     data_max_length = 0xFF
 
     def set_device_name(self, device_name):
@@ -89,6 +89,8 @@ class Pn532Com:
             is_pn532killer = self.is_pn532killer()
             if is_pn532killer:
                 self.device_name = "PN532Killer"
+            else:
+                self.device_name = "PN532"
         return self
 
     def check_open(self):
@@ -149,6 +151,15 @@ class Pn532Com:
     def is_pn532killer(self):
         response = self.send_cmd_sync(Pn532KillerCommand.checkPn532Killer)
         return response.status == Status.SUCCESS
+
+    def is_support_cmd(self, cmd: int) -> bool:
+        if cmd in BasicCapabilities:
+            return True
+        elif self.device_name == "PN532":
+            return cmd in PN532Capabilities
+        elif self.device_name == "PN532Killer":
+            return cmd in PN532KillerCapabilities or cmd in PN532Capabilities
+        return True
 
     def read_mifare_block(self, block: int) -> str:
         # append 2 bytes crcA to data

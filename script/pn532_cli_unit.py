@@ -105,11 +105,6 @@ class BaseCLIUnit:
         raise NotImplementedError("Please implement this")
 
     def before_exec(self, args: argparse.Namespace):
-        """
-            Call a function before exec cmd.
-
-        :return: function references
-        """
         return True
 
     def on_exec(self, args: argparse.Namespace):
@@ -195,23 +190,15 @@ class DeviceRequiredUnit(BaseCLIUnit):
     def before_exec(self, args: argparse.Namespace):
         ret = self.device_com.isOpen()
         if ret:
+            if not self.device_com.is_support_cmd(self.__class__.__name__):
+                print(f"{CR}Command not support by {self.device_com.get_device_name()}{C0}")
+                return False
             return True
         else:
             print("Please connect to pn532 device first(use 'hw connect').")
             return False
 
-
-class ReaderRequiredUnit(DeviceRequiredUnit):
-    """
-    Make sure of device enter to reader mode.
-    """
-
-    def before_exec(self, args: argparse.Namespace):
-        if super().before_exec(args):
-            return True
-
-
-class MF1SetUidArgsUnit(ReaderRequiredUnit):
+class MF1SetUidArgsUnit(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.add_argument("-u", type=str, required=True, help="UID to set")
@@ -223,7 +210,8 @@ class MF1SetUidArgsUnit(ReaderRequiredUnit):
             raise ArgsParserError("UID must be 4 or 7 bytes long")
         return uid
 
-class MF1AuthArgsUnit(ReaderRequiredUnit):
+
+class MF1AuthArgsUnit(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.add_argument(
@@ -288,7 +276,7 @@ class RootClear(BaseCLIUnit):
 
 
 @hw_mode.command("r")
-class HWModeReader(ReaderRequiredUnit):
+class HWModeReader(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Set device to reader mode"
@@ -300,7 +288,7 @@ class HWModeReader(ReaderRequiredUnit):
 
 
 @hw_mode.command("e")
-class HWModeEmulator(ReaderRequiredUnit):
+class HWModeEmulator(DeviceRequiredUnit):
     # support -type m14b1k, 15693, em4100 and -slot 1-8
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
@@ -326,7 +314,7 @@ class HWModeEmulator(ReaderRequiredUnit):
 
 
 @hw_mode.command("s")
-class HWModeEmulator(ReaderRequiredUnit):
+class HWModeSniffer(DeviceRequiredUnit):
     # support -type for 14a with tag, 14a without tag, 15
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
@@ -347,7 +335,7 @@ class HWModeEmulator(ReaderRequiredUnit):
 
 
 @hw.command("raw")
-class HWRaw(ReaderRequiredUnit):
+class HWRaw(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Send raw data to device"
@@ -366,13 +354,15 @@ class HWRaw(ReaderRequiredUnit):
         if not re.match(r"^[0-9a-fA-F]+$", data):
             print("Data must be a HEX string")
             return
+        if len(data) % 2 != 0:
+            data = "0" + data
         data_bytes = bytes.fromhex(data)
         resp = self.device_com.send_raw(data_bytes)
         print(f"Response: {' '.join(f'{byte:02X}' for byte in resp)}")
 
 
 @hf_14a.command("scan")
-class HF14AScan(ReaderRequiredUnit):
+class HF14AScan(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Scan 14a tag, and print basic information"
@@ -403,7 +393,7 @@ class HF14AScan(ReaderRequiredUnit):
 
 
 @hf_14a.command("raw")
-class HF14ARaw(ReaderRequiredUnit):
+class HF14ARaw(DeviceRequiredUnit):
     def bool_to_bit(self, value):
         return 1 if value else 0
 
@@ -516,7 +506,7 @@ examples/notes:
 
 
 @hf_15.command("scan")
-class HF15Scan(ReaderRequiredUnit):
+class HF15Scan(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Scan ISO15693 tag, and print basic information"
@@ -622,7 +612,7 @@ class HWConnect(BaseCLIUnit):
 
 
 @hw.command("version")
-class HwVersion(ReaderRequiredUnit):
+class HWVersion(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Get firmware version"
@@ -636,7 +626,7 @@ class HwVersion(ReaderRequiredUnit):
             print("Failed to get firmware version")
 
 @hf_sniff.command("setuid")
-class HfSniffSetUid(ReaderRequiredUnit):
+class HfSniffSetUid(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Set UID of sniffer slot"
@@ -706,7 +696,7 @@ class HfSniffSetUid(ReaderRequiredUnit):
         return str_to_bytes(block0)
 
 @hf_mf.command("setuid")
-class HfMfSetUid(ReaderRequiredUnit):
+class HfMfSetUid(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.formatter_class = argparse.RawDescriptionHelpFormatter
@@ -979,7 +969,7 @@ class HfMfCview(DeviceRequiredUnit):
                 print(f"Dump saved to {fileName}.bin")
 
 @ntag.command("emulate")
-class NtagEmulator(DeviceRequiredUnit):
+class NtagEmulate(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Start NTAG emulating"
