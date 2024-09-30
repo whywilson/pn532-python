@@ -64,6 +64,8 @@ PN532KillerCapabilities = [
     "HWModeEmulator",
     "HF15Scan",
     "HfSniffSetUid",
+    "HfMfEload",
+    "HfMfEread"
 ]
 
 @enum.unique

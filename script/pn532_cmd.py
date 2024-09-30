@@ -402,10 +402,54 @@ class Pn532CMD:
         :param block0: 16 bytes
         :return:
         """
-        self.upload_data_block(slot = 0x11,data = block0)
+        self.upload_data_block(slot = 0x11, data = block0)
         self.upload_data_block_done(slot = 0x11)
         return Response(Pn532KillerCommand.setEmulatorData, Status.SUCCESS)
+    
+    @expect_response(Status.SUCCESS)
+    def hf_mf_load(self, dump_map, slot = 0):
+        """
+        Load Mifare dump
 
+        :param dump_map: dump map
+        :param slot: slot number
+        :return:
+        """
+        
+        slot = int(slot) - 1
+        for block_index, block_data in dump_map.items():
+            block = int(block_index)
+            resp = self.upload_data_block(type = 1, slot = slot, block = block, data = bytes.fromhex(block_data))
+            print(f"Load block {block:02d} {block_data}: {resp}")
+        self.upload_data_block_done(slot = slot)
+        return Response(Pn532KillerCommand.setEmulatorData, Status.SUCCESS)
+
+    def hf_mf_eread(self, slot):
+        """
+        Mifare emulator read to dump
+
+        :param slot: slot number
+        :return:
+        """
+        slot = slot - 1
+        self.prepare_get_emulator_data(type = 1, slot = slot)
+        sleep(0.02)
+        mifare_dump = {}
+        for block in range(64):
+            resp = self.download_data_block(type = 1, slot = slot, index = block)
+            if block == 0:
+                print(
+                            f"block {block:02d}: {CY}{resp.hex()[0:8].upper()}{CR}{resp.hex()[8:10].upper()}{CG}{resp.hex()[10:14].upper()}{C0}{resp.hex()[14:].upper()}{C0}"
+                        )
+            elif block % 4 == 3:
+                print(
+                            f"block {block:02d}: {CG}{resp.hex()[0:12].upper()}{CR}{resp.hex()[12:20].upper()}{CG}{resp.hex()[20:].upper()}{C0}"
+                        )
+            else:
+                print(f"block {block:02d}: {resp.hex().upper()}")
+            mifare_dump[block] = resp
+        return mifare_dump
+    
     @expect_response(Status.SUCCESS)
     def upload_data_block(self, type = 1, slot = 0, block = 0, data : bytes = b""):
         """
@@ -418,7 +462,9 @@ class Pn532CMD:
         :return:
         """
         data = struct.pack("!BBH", type, slot, block) + data
-        return self.device.send_cmd_sync(Pn532KillerCommand.setEmulatorData, data)
+        resp = self.device.send_cmd_sync(Pn532KillerCommand.setEmulatorData, data)
+        resp.parsed = "Success" if len(resp.data) == 5 and resp.data[4] == 0x00 else "Failed"
+        return resp
 
     @expect_response(Status.SUCCESS)
     def upload_data_block_done(self, type = 1, slot = 0):
@@ -434,6 +480,27 @@ class Pn532CMD:
             "!BBH16s", type, slot, 0xFFFF, b"\x00" * 16
         )
         return self.device.send_cmd_sync(Pn532KillerCommand.setEmulatorData, data)
+    
+    @expect_response(Status.SUCCESS)
+    def download_data_block(self, type = 1, slot = 0, index = 0):
+        """
+        Download data block
+
+        :param type: 1 byte
+        :param slot: slot number, 1 byte
+        :param block: block number, 2 bytes
+        :return:
+        """
+        data = struct.pack("!BBH", type, slot, index)
+        resp = self.device.send_cmd_sync(Pn532KillerCommand.getEmulatorData, data)
+        # print(f"Block {index}: {resp.data.hex().upper()}")
+        resp.parsed = resp.data[4:]
+        return resp
+    
+    @expect_response(Status.SUCCESS)
+    def prepare_get_emulator_data(self, type = 1, slot = 0):
+        resp = self.download_data_block(type, slot, 0xFF)
+        return Response(Pn532KillerCommand.getEmulatorData, Status.SUCCESS)
     
     @expect_response(Status.SUCCESS)
     def ntag_emulator(self, url: str):
