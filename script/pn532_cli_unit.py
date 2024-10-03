@@ -522,6 +522,163 @@ class HF15Scan(DeviceRequiredUnit):
     def on_exec(self, args: argparse.Namespace):
         self.scan()
 
+@hf_15.command("esetuid")
+class HF15ESetUid(DeviceRequiredUnit):
+    # add parameter -u <hex> to set uid(8 bytes, start with E0)
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set UID of ISO15693 Emulation"
+        parser.add_argument(
+            "-u",
+            type=str,
+            metavar="<hex>",
+            required=True,
+            help="UID to set (8 bytes)",
+        )
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        return parser
+    
+    def on_exec(self, args: argparse.Namespace):
+        uid = args.u
+        if not re.match(r"^[a-fA-F0-9]{16}$", uid):
+            print("UID must be 8 bytes hex")
+            return
+        # if not start with e0 or E0
+        if uid[0:2].lower() != "e0":
+            print("UID must start with E0")
+            return
+        resp = self.cmd.hf_15_set_uid(args.slot - 1, bytes.fromhex(uid))
+        print(f"Set Slot {args.slot} UID to {uid} {CY}{'Success' if resp else 'Fail'}{C0}")
+
+@hf_15.command("esetblock")
+class HF15ESetBlock(DeviceRequiredUnit):
+    # add parameter -b <hex> to set block data(4 bytes)
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set block data of ISO15693 Emulation"
+        parser.add_argument(
+            "-b",
+            type=int,
+            metavar="<dec>",
+            help="Block to set",
+        )
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        # add data block
+        parser.add_argument(
+            "-d",
+            "--data",
+            metavar="<hex>",
+            type=str,
+            required=False,
+            help="Data block (4 bytes)",
+        )
+        return parser
+    
+    def on_exec(self, args: argparse.Namespace):
+        block = args.data
+        if not re.match(r"^[a-fA-F0-9]{8}$", block):
+            print("Block must be 4 bytes hex")
+            return
+        resp = self.cmd.hf_15_set_block(args.slot - 1, args.b, bytes.fromhex(block))
+        print(f"Set Slot {args.slot} block {args.b} to {block} {CY}{'Success' if resp else 'Fail'}{C0}")
+
+@hf_15.command("eSetwriteprotect")
+class HF15ESetWriteProtect(DeviceRequiredUnit):
+    # add parameter -b <hex> to set block data(4 bytes)
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set write protect of ISO15693 Emulation"
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        parser.add_argument(
+            "-w",
+            "--write",
+            action="store_true",
+            help="Enable write protect",
+            default=False,
+        )
+        return parser
+    
+    def on_exec(self, args: argparse.Namespace):
+        resp = self.cmd.hf_15_set_write_protect(args.slot - 1, b'\x01' if args.write else b'\x00')
+        print(f"Set Slot {args.slot} write protect to {args.write} {CY}{'Success' if resp else 'Fail'}{C0}")
+
+@hf_15.command("eSetResvEasAfiDsfid")
+class HF15ESetResvEasAfiDsfid(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set Resv, EAS, AFI, DSFID of ISO15693 Emulation"
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        parser.add_argument(
+            "-r",
+            "--resv",
+            type=str,
+            metavar="<hex>",
+            help="Resv",
+        )
+        parser.add_argument(
+            "-e",
+            "--eas",
+            type=str,
+            metavar="<hex>",
+            help="EAS",
+        )
+        parser.add_argument(
+            "-a",
+            "--afi",
+            type=str,
+            metavar="<hex>",
+            help="AFI",
+        )
+        parser.add_argument(
+            "-d",
+            "--dsfid",
+            type=str,
+            metavar="<hex>",
+            help="DSFID",
+        )
+        return parser
+    
+    def on_exec(self, args: argparse.Namespace):
+        # pack resv, eas, afi, dsfid
+        data = b""
+        if args.resv is not None:
+            if not re.match(r"^[a-fA-F0-9]{2}$", args.resv):
+                print("Resv must be 1 byte hex")
+                return
+            data += bytes.fromhex(args.resv)
+        else:
+            data += b"\x00"
+        if args.eas is not None:
+            if not re.match(r"^[a-fA-F0-9]{2}$", args.eas):
+                print("EAS must be 1 byte hex")
+                return
+            data += bytes.fromhex(args.eas)
+        else:
+            data += b"\x00"
+        if args.afi is not None:
+            if not re.match(r"^[a-fA-F0-9]{2}$", args.afi):
+                print("AFI must be 1 byte hex")
+                return
+            data += bytes.fromhex(args.afi)
+        else:
+            data += b"\x00"
+        if args.dsfid is not None:
+            if not re.match(r"^[a-fA-F0-9]{2}$", args.dsfid):
+                print("DSFID must be 1 byte hex")
+                return
+            data += bytes.fromhex(args.dsfid)
+        else:
+            data += b"\x00"
+        resp = self.cmd.hf_15_set_resv_eas_afi_dsfid(args.slot - 1, data)
+        print(f"Set Slot {args.slot} Resv, EAS, AFI, DSFID {CY}{'Success' if resp else 'Fail'}{C0}")
 
 @root.command("exit")
 class RootExit(BaseCLIUnit):
@@ -765,6 +922,7 @@ class HfMfEread(DeviceRequiredUnit):
         return parser
     
     def on_exec(self, args: argparse.Namespace):
+        self.device_com.set_work_mode(2, 0x01, args.slot - 1)
         dump_map = self.cmd.hf_mf_eread(args.slot)
         # {"0": "11223344556677889900AABBCCDDEEFF", "1": "11223344556677889900AABBCCDDEEFF", ...}
         if not dump_map:
