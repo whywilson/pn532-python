@@ -850,7 +850,7 @@ class HfSniffSetUid(DeviceRequiredUnit):
                 print(f"{CR}Invalid BCC{C0}")
                 return
         return str_to_bytes(block0)
-    
+
 @hf_mf.command("eload")
 class HfMfEload(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -904,7 +904,7 @@ class HfMfEload(DeviceRequiredUnit):
                 print(f"Invalid block {block_index}")
                 return
         self.cmd.hf_mf_load(dump_map, args.slot)
-        
+
 @hf_mf.command("eread")
 class HfMfEread(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -949,7 +949,7 @@ class HfMfEread(DeviceRequiredUnit):
             with open(file_name, "wb") as bin_file:
                 for block_index, block_data in dump_map.items():
                     bin_file.write(bytes.fromhex(block_data))
-            
+
 @hf_mf.command("setuid")
 class HfMfSetUid(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -971,6 +971,13 @@ class HfMfSetUid(DeviceRequiredUnit):
             type=str,
             required=False,
             help="Block 0 (16 bytes)",
+        )
+        parser.add_argument(
+            "-k",
+            metavar="<hex>",
+            type=str,
+            required=False,
+            help="Mifare Key (6 bytes)",
         )
         parser.add_argument(
             "-g",

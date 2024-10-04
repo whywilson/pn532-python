@@ -231,6 +231,87 @@ class Pn532CMD:
                 return True
         return False
 
+    def selectTag(self):
+        tag_info = {}
+        resp = self.hf14a_scan()
+        self.device.halt()
+        if resp == None:
+            print("No tag found")
+            return resp
+        # print("Tag found", resp)
+        tag_info["uid"] = resp[0]["uid"].hex()
+        uid_length = len(resp[0]["uid"])
+        print("UID length:", uid_length)
+        tag_info["atqa"] = resp[0]["atqa"].hex()
+        tag_info["sak"] = resp[0]["sak"].hex()
+        tag_info["data"] = []
+        options = {
+            "activate_rf_field": 0,
+            "wait_response": 1,
+            "append_crc": 0,
+             "auto_select": 0,
+            "keep_rf_field": 1,
+            "check_response_crc": 0,
+        }
+        wupa_result = self.hf14a_raw(
+            options=options, resp_timeout_ms=1000, data=[0x52], bitlen=7
+        )
+        print("WUPA:", wupa_result.hex())
+        anti_coll_result = self.hf14a_raw(
+            options=options, resp_timeout_ms=1000, data=[0x93, 0x20]
+        )
+        print("Anticollision CL1:", anti_coll_result.hex())
+        if anti_coll_result[0] != 0x00:
+            print("Anticollision failed")
+            return False
+
+        anti_coll_data = anti_coll_result[1:]
+        options["append_crc"] = 1
+        select_result = self.hf14a_raw(
+            options=options, resp_timeout_ms=1000, data=[0x93, 0x70] + list(anti_coll_data)
+        )
+        print("Select CL1:", select_result.hex())
+
+        if uid_length == 4:
+            return len(select_result) > 1 and select_result[0] == 0x00
+        elif uid_length == 7:
+            options["append_crc"] = 0
+            anti_coll2_result = self.hf14a_raw( options=options, resp_timeout_ms=1000, data=[0x95, 0x20])
+            print("Anticollision CL2:", anti_coll2_result.hex())
+            if anti_coll2_result[0] != 0x00:
+                print("Anticollision CL2 failed")
+                return False
+            anti_coll2_data = anti_coll2_result[1:]
+            options["append_crc"] = 1
+            select2_result = self.hf14a_raw(
+                options=options, resp_timeout_ms=1000, data=[0x95, 0x70] + list(anti_coll2_data)
+            )
+            print("Select CL2:", select2_result.hex())
+            return len(select2_result) > 1 and select2_result[0] == 0x00
+        return False
+
+    def isGen3(self):
+        selected_tag = self.selectTag()
+        if selected_tag is None:
+            print(f"{CR}Select tag failed{C0}")
+            return
+        options = {
+            "activate_rf_field": 0,
+            "wait_response": 1,
+            "append_crc": 1,
+            "auto_select": 0,
+            "keep_rf_field": 1,
+            "check_response_crc": 0,
+        }
+        block0 = self.hf14a_raw(
+            options=options,
+            resp_timeout_ms=1000,
+            data=b"\x30\x00",
+        )
+        if len(block0.data) >= 16:
+            return True
+        return False
+
     def isGen4(self, pwd="00000000"):
         options = {
             "activate_rf_field": 1,
@@ -405,7 +486,7 @@ class Pn532CMD:
         self.upload_data_block(slot = 0x11, data = block0)
         self.upload_data_block_done(slot = 0x11)
         return Response(Pn532KillerCommand.setEmulatorData, Status.SUCCESS)
-    
+
     @expect_response(Status.SUCCESS)
     def lf_em4100_set_id(self, slot, uid: bytes):
         """
@@ -414,7 +495,7 @@ class Pn532CMD:
         resp_set = self.upload_data_block(type = 0x04, slot = slot + 0x12, data = uid)
         resp_save = self.upload_data_block_done(type = 0x04, slot = slot + 18)
         return resp_set and resp_save
-    
+
     def hf_15_set_uid(self, slot, uid: bytes):
         """
         Set uid for 15 emulator
@@ -423,7 +504,7 @@ class Pn532CMD:
         resp_set = self.upload_data_block(type = 0x03, slot = slot + 0x1A, index = 0xFE00, data = uid[::-1])
         resp_save = self.hf_15_save(slot)
         return resp_set and resp_save
-    
+
     def hf_15_set_block(self, slot, index,  data: bytes):
         """
         Set block data for 15 emulator on block index
@@ -431,7 +512,7 @@ class Pn532CMD:
         resp_set = self.upload_data_block(type = 0x03, slot = slot + 0x1A, index = index, data = data)
         resp_save = self.hf_15_save(slot)
         return resp_set and resp_save
-    
+
     def hf_15_set_resv_eas_afi_dsfid(self, slot, data):
         """
         Set Resv EAS AFI DSFID for 15 emulator
@@ -439,7 +520,7 @@ class Pn532CMD:
         resp_set = self.upload_data_block(type = 0x03, slot = slot + 0x1A, index = 0xFC00, data = data)
         resp_save = self.hf_15_save(slot)
         return resp_set and resp_save
-    
+
     def hf_15_set_write_protect(self, slot, data):
         """
         Set write protect for 15 emulator
@@ -447,13 +528,13 @@ class Pn532CMD:
         resp_set = self.upload_data_block(type = 0x03, slot = slot + 0x1A, index = 0xFB00, data = data)
         resp_save = self.hf_15_save(slot)
         return resp_set and resp_save
-    
+
     def hf_15_save(self, slot):
         """
         Save 15 emulator data
         """
         return self.upload_data_block_done(type = 0x03, slot = slot + 0x1A, extra = b"\x00" * 4)
-    
+
     @expect_response(Status.SUCCESS)
     def hf_mf_load(self, dump_map, slot = 0):
         """
@@ -463,7 +544,7 @@ class Pn532CMD:
         :param slot: slot number
         :return:
         """
-        
+
         slot = int(slot) - 1
         for block_index, block_data in dump_map.items():
             block = int(block_index)
@@ -497,7 +578,7 @@ class Pn532CMD:
                 print(f"block {block:02d}: {resp.hex().upper()}")
             mifare_dump[block] = resp
         return mifare_dump
-    
+
     @expect_response(Status.SUCCESS)
     def upload_data_block(self, type = 1, slot = 0, index = 0, data : bytes = b""):
         """
@@ -528,7 +609,7 @@ class Pn532CMD:
         resp = self.device.send_cmd_sync(Pn532KillerCommand.setEmulatorData, data)
         resp.parsed = True if resp.data[-1] == 0x00 else False
         return resp
-    
+
     @expect_response(Status.SUCCESS)
     def download_data_block(self, type = 1, slot = 0, index = 0):
         """
@@ -544,12 +625,12 @@ class Pn532CMD:
         # print(f"Block {index}: {resp.data.hex().upper()}")
         resp.parsed = resp.data[4:]
         return resp
-    
+
     @expect_response(Status.SUCCESS)
     def prepare_get_emulator_data(self, type = 1, slot = 0):
         resp = self.download_data_block(type, slot, 0xFF)
         return Response(Pn532KillerCommand.getEmulatorData, Status.SUCCESS)
-    
+
     @expect_response(Status.SUCCESS)
     def ntag_emulator(self, url: str):
         input_thread = threading.Thread(target=self.wait_for_enter)
@@ -819,11 +900,8 @@ def test_fn():
     cml = Pn532CMD(dev)
 
     try:
-        block = 3
-        key_str = "A0A1A2A3A4A5"
-        resp = cml.mf1_read_one_block(block, MfcKeyType.A, bytes.fromhex(key_str))
-        if resp is not None:
-            print(f"Block {block}: {resp.parsed.hex().upper()}")
+        resp = cml.selectTag()
+        print("Select tag:", resp)
     except Exception as e:
         print("Error:", e)
     dev.close()
