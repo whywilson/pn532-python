@@ -1,6 +1,8 @@
 def str_to_bytes(data):
     try:
         data = data.replace(" ", "")
+        if len(data) % 2 != 0:
+            data = "0" + data
         return bytes.fromhex(data)
     except ValueError:
         raise ValueError("Not valid hex")

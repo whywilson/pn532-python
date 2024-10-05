@@ -238,10 +238,10 @@ class Pn532CMD:
         if resp == None:
             print("No tag found")
             return resp
-        # print("Tag found", resp)
         tag_info["uid"] = resp[0]["uid"].hex()
         uid_length = len(resp[0]["uid"])
-        print("UID length:", uid_length)
+        if DEBUG:
+            print("Found UID:", tag_info["uid"])
         tag_info["atqa"] = resp[0]["atqa"].hex()
         tag_info["sak"] = resp[0]["sak"].hex()
         tag_info["data"] = []
@@ -256,13 +256,16 @@ class Pn532CMD:
         wupa_result = self.hf14a_raw(
             options=options, resp_timeout_ms=1000, data=[0x52], bitlen=7
         )
-        print("WUPA:", wupa_result.hex())
+        if DEBUG: 
+            print("WUPA:", wupa_result.hex())
         anti_coll_result = self.hf14a_raw(
             options=options, resp_timeout_ms=1000, data=[0x93, 0x20]
         )
-        print("Anticollision CL1:", anti_coll_result.hex())
+        if DEBUG:
+            print("Anticollision CL1:", anti_coll_result.hex())
         if anti_coll_result[0] != 0x00:
-            print("Anticollision failed")
+            if DEBUG: 
+                print("Anticollision failed")
             return False
 
         anti_coll_data = anti_coll_result[1:]
@@ -270,23 +273,27 @@ class Pn532CMD:
         select_result = self.hf14a_raw(
             options=options, resp_timeout_ms=1000, data=[0x93, 0x70] + list(anti_coll_data)
         )
-        print("Select CL1:", select_result.hex())
+        if DEBUG:
+            print("Select CL1:", select_result.hex())
 
         if uid_length == 4:
             return len(select_result) > 1 and select_result[0] == 0x00
         elif uid_length == 7:
             options["append_crc"] = 0
             anti_coll2_result = self.hf14a_raw( options=options, resp_timeout_ms=1000, data=[0x95, 0x20])
-            print("Anticollision CL2:", anti_coll2_result.hex())
+            if DEBUG: 
+                print("Anticollision CL2:", anti_coll2_result.hex())
             if anti_coll2_result[0] != 0x00:
-                print("Anticollision CL2 failed")
+                if DEBUG: 
+                    print("Anticollision CL2 failed")
                 return False
             anti_coll2_data = anti_coll2_result[1:]
             options["append_crc"] = 1
             select2_result = self.hf14a_raw(
                 options=options, resp_timeout_ms=1000, data=[0x95, 0x70] + list(anti_coll2_data)
             )
-            print("Select CL2:", select2_result.hex())
+            if DEBUG: 
+                print("Select CL2:", select2_result.hex())
             return len(select2_result) > 1 and select2_result[0] == 0x00
         return False
 
@@ -308,7 +315,58 @@ class Pn532CMD:
             resp_timeout_ms=1000,
             data=b"\x30\x00",
         )
-        if len(block0.data) >= 16:
+        if len(block0) >= 16:
+            return True
+        return False
+
+    def setGen3Uid(self, uid: bytes):
+        options = {
+            "activate_rf_field": 0,
+            "wait_response": 1,
+            "append_crc": 1,
+            "auto_select": 0,
+            "keep_rf_field": 1,
+            "check_response_crc": 0,
+        }
+        command = "90FBCCCC07" + uid.hex()
+        resp = self.hf14a_raw(
+            options=options, resp_timeout_ms=1000, data=bytes.fromhex(command)
+        )
+        if resp[0] == 0x00:
+            return True
+        return False
+
+    def setGen3Block0(self, block0: bytes):
+        options = {
+            "activate_rf_field": 0,
+            "wait_response": 1,
+            "append_crc": 1,
+            "auto_select": 0,
+            "keep_rf_field": 1,
+            "check_response_crc": 0,
+        }
+        command = "90F0CCCC10" + block0.hex()
+        resp = self.hf14a_raw(
+            options=options, resp_timeout_ms=1000, data=bytes.fromhex(command)
+        )
+        if resp[0] == 0x00:
+            return True
+        return False
+
+    def lockGen3Uid(self):
+        options = {
+            "activate_rf_field": 0,
+            "wait_response": 1,
+            "append_crc": 1,
+            "auto_select": 0,
+            "keep_rf_field": 1,
+            "check_response_crc": 0,
+        }
+        command = "90FD111100"
+        resp = self.hf14a_raw(
+            options=options, resp_timeout_ms=1000, data=bytes.fromhex(command)
+        )
+        if resp[0] == 0x00:
             return True
         return False
 
@@ -900,8 +958,8 @@ def test_fn():
     cml = Pn532CMD(dev)
 
     try:
-        resp = cml.selectTag()
-        print("Select tag:", resp)
+        resp = cml.isGen3()
+        print("isGen3:", resp)
     except Exception as e:
         print("Error:", e)
     dev.close()

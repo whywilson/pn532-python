@@ -955,7 +955,7 @@ class HfMfSetUid(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.formatter_class = argparse.RawDescriptionHelpFormatter
-        parser.description = "Set UID of a Magic Mifare Classic with a specific UID or block0.\nSupports on Gen1A, Gen2, Gen3 and Gen4."
+        parser.description = "Set UID of magic Mifare classic with UID or block0."
         parser.add_argument(
             "-u",
             type=str,
@@ -992,7 +992,13 @@ class HfMfSetUid(DeviceRequiredUnit):
             type=str,
             metavar="<hex>",
             required=False,
-            help="Gen4 Password (Default 00000000)",
+            help="Set Gen4 Password (Default 00000000)",
+        )
+        parser.add_argument(
+            "--lock",
+            action="store_true",
+            help="Lock Gen3 UID forever",
+            default=False,
         )
         parser.epilog = (
             parser.epilog
@@ -1006,9 +1012,6 @@ examples:
         return parser
 
     def get_block0(self, uid, args):
-        sak = 0x08
-        atqa = 0x0400
-        factory_info = 0xAABBCCDDEEFFFFFF
         block0 = args.blk0
         if block0 == None:
             if len(uid) != 4 and len(uid) != 7:
@@ -1016,9 +1019,18 @@ examples:
                 return
             bcc = 0
             if len(uid) == 4:
+                sak = 0x08
+                atqa = 0x0400
+                factory_info = 0xAABBCCDDEEFFFFFF
                 bcc = uid[0] ^ uid[1] ^ uid[2] ^ uid[3]
-            uid_hex = "".join(format(x, "02x") for x in uid)
-            block0 = f"{uid_hex}{format(bcc, '02x')}{format(sak, '02x')}{format(atqa, '04x')}{format(factory_info, '016x')}"
+                uid_hex = "".join(format(x, "02x") for x in uid)
+                block0 = f"{uid_hex}{format(bcc, '02x')}{format(sak, '02x')}{format(atqa, '04x')}{format(factory_info, '016x')}"
+            elif len(uid) == 7:
+                sak = 0x18
+                atqa = 0x4200
+                factory_info = 0xAABBCCDDEEFF
+                uid_hex = "".join(format(x, "02x") for x in uid)
+                block0 = f"{uid_hex}{format(sak, '02x')}{format(atqa, '04x')}{format(factory_info, '012x')}"
         else:
             if is_hex(block0) == False:
                 print(f"{CR}Block0 needs to be hex{C0}")
@@ -1086,8 +1098,18 @@ examples:
     def gen2_set_block0(self, block0: bytes):
         pass
 
-    def gen3_set_block0(self, block0: bytes):
-        pass
+    def gen3_set_block0(self, uid: bytes, block0: bytes, lock: bool = False):
+        selectTag = self.cmd.selectTag()
+        if not selectTag:
+            print(f"{CR}Select tag failed{C0}")
+            return
+        resp1 = self.cmd.setGen3Uid(uid)
+        print(f"Set UID to {uid.hex().upper()}: {CG}Success{C0}" if resp1 else f"Set UID to {uid.hex().upper()}: {CR}Failed{C0}")
+        resp2 = self.cmd.setGen3Block0(block0)
+        print(f"Set block0 to {block0.hex().upper()}: {CG}Success{C0}" if resp2 else f"Set block0 to {block0.hex().upper()}: {CR}Failed{C0}")
+        if lock:
+            resp3 = self.cmd.lockGen3Uid()
+            print(f"Lock UID: {CG}Success{C0}" if resp3 else f"Lock UID: {CR}Failed{C0}")
 
     def gen4_set_block0(self, uid: bytes, block0: bytes, pwd = "00000000"):
         tag_info = {}
@@ -1148,7 +1170,7 @@ examples:
         elif gen == 2:
             self.gen2_set_block0(block0)
         elif gen == 3:
-            self.gen3_set_block0(block0)
+            self.gen3_set_block0(uid, block0, args.lock)
         elif gen == 4:
             self.gen4_set_block0(block0, uid, pwd=args.p)
 
