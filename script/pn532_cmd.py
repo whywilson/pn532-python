@@ -97,7 +97,7 @@ class Pn532CMD:
         try:
             if not self.isGen1a():
                 print("Not Gen1A tag")
-                raise
+                return Response(Command.InCommunicateThru, Status.HF_TAG_NO)
 
             options = {
                 "activate_rf_field": 0,
@@ -117,6 +117,8 @@ class Pn532CMD:
                     resp_timeout_ms=1000,
                     data=[MifareCommand.MfReadBlock, block],
                 )
+                if len(resp) > 16:
+                    resp = resp[:16]
                 block_data[f"{block}"] = resp.hex()
                 # print block index with padding 2 spaces
                 # print(f"block {block:02d}: {resp.hex().upper()}")
@@ -192,7 +194,6 @@ class Pn532CMD:
             data = bytes(data) + crc16A(bytes(data))
         resp = self.device.send_cmd_sync(Command.InCommunicateThru, data, timeout=1)
         resp.parsed = resp.data
-        resp.status = resp.data[0:1]
         if cs.keep_rf_field == 0:
             self.device.halt()
 
@@ -202,7 +203,7 @@ class Pn532CMD:
 
         if DEBUG:
             print(
-                f"Send: {bytes(data).hex().upper()} Status: {resp.status.hex().upper()}, Data: {resp.parsed.hex().upper()}"
+                f"Send: {bytes(data).hex().upper()} Status: {hex(resp.status)[2:].upper()}, Data: {resp.parsed.hex().upper()}"
             )
         return resp
 
@@ -372,20 +373,20 @@ class Pn532CMD:
 
     def isGen4(self, pwd="00000000"):
         options = {
-            "activate_rf_field": 1,
+            "activate_rf_field": 0,
             "wait_response": 1,
-            "append_crc": 0,
+            "append_crc": 1,
             "auto_select": 0,
             "keep_rf_field": 1,
             "check_response_crc": 0,
         }
-        command = f"CF{pwd}C6"
+        command = f"CF{pwd}C6" 
         resp = self.hf14a_raw(
             options=options, resp_timeout_ms=1000, data=bytes.fromhex(command)
         )
         if DEBUG:
             print("isGen4:", resp.hex())
-        if len(resp) > 30:
+        if len(resp) >= 30:
             return True
         return False
 
@@ -457,14 +458,9 @@ class Pn532CMD:
         return block % 4 == 3
 
     @expect_response(Status.HF_TAG_OK)
-    def mf1_write_one_block(self, block, type_value: MfcKeyType, key, block_data):
-        resp = self.hf14a_scan()
-        if resp == None:
-            print("No tag found")
-            return resp
-
+    def mf1_write_one_block(self, uid, block, type_value: MfcKeyType, key, block_data):
         auth_result = self.mf1_auth_one_key_block(
-            block, type_value, key, bytes(resp[0]["uid"])
+            block, type_value, key, uid
         )
         if not auth_result:
             return Response(Command.InDataExchange, Status.HF_TAG_NO)
@@ -958,8 +954,22 @@ def test_fn():
     cml = Pn532CMD(dev)
 
     try:
-        resp = cml.isGen3()
-        print("isGen3:", resp)
+        resp = cml.hf14a_scan()
+        print("hf14a_scan:", resp)
+        options = {
+                "activate_rf_field": 0,
+                "wait_response": 1,
+                "append_crc": 1,
+                "auto_select": 0,
+                "keep_rf_field": 1,
+                "check_response_crc": 0,
+            }
+        resp = cml.hf14a_raw(
+                options=options,
+                resp_timeout_ms=1000,
+                data= bytes.fromhex("cf00000000ce00"),
+            )
+        print("hf14a_raw:", resp.hex().upper())
     except Exception as e:
         print("Error:", e)
     dev.close()

@@ -973,13 +973,6 @@ class HfMfSetUid(DeviceRequiredUnit):
             help="Block 0 (16 bytes)",
         )
         parser.add_argument(
-            "-k",
-            metavar="<hex>",
-            type=str,
-            required=False,
-            help="Mifare Key (6 bytes)",
-        )
-        parser.add_argument(
             "-g",
             type=int,
             metavar="<dec>",
@@ -988,17 +981,32 @@ class HfMfSetUid(DeviceRequiredUnit):
             default=1,
         )
         parser.add_argument(
-            "-p",
-            type=str,
+            "-k",
             metavar="<hex>",
+            type=str,
             required=False,
-            help="Set Gen4 Password (Default 00000000)",
+            default="ffffffffffff",
+            help="Mifare Key (6 bytes)",
+        )
+        parser.add_argument(
+            "-b",
+            action="store_true",
+            default=False,
+            help="Set Gen2 use keyB (Default keyA)",
         )
         parser.add_argument(
             "--lock",
             action="store_true",
             help="Lock Gen3 UID forever",
             default=False,
+        )
+        parser.add_argument(
+            "-p",
+            type=str,
+            metavar="<hex>",
+            default="00000000",
+            required=False,
+            help="Set Gen4 Password (Default 00000000)",
         )
         parser.epilog = (
             parser.epilog
@@ -1095,9 +1103,24 @@ examples:
         else:
             print(f"{CR}Tag is not Gen1A{C0}")
 
-    def gen2_set_block0(self, block0: bytes):
-        pass
-
+    def gen2_set_block0(self, block0: bytes, key: bytes, use_key_b: bool = False):
+        tag_info = {}
+        resp = self.cmd.hf14a_scan()
+        if resp == None:
+            print("No tag found")
+            return resp
+        # print("Tag found", resp)
+        tag_info["uid"] = resp[0]["uid"].hex()
+        tag_info["atqa"] = resp[0]["atqa"].hex()
+        tag_info["sak"] = resp[0]["sak"].hex()
+        tag_info["data"] = []
+        print(f"Write block 0: {block0.hex().upper()}")
+        resp = self.cmd.mf1_write_one_block(resp[0]["uid"], 0, MfcKeyType.B if use_key_b else MfcKeyType.A, key, block0)
+        if resp:
+            print(f" - {CG}Write done.{C0}")
+        else:
+            print(f" - {CR}Write failed.{C0}")
+        
     def gen3_set_block0(self, uid: bytes, block0: bytes, lock: bool = False):
         selectTag = self.cmd.selectTag()
         if not selectTag:
@@ -1114,7 +1137,6 @@ examples:
     def gen4_set_block0(self, uid: bytes, block0: bytes, pwd = "00000000"):
         tag_info = {}
         resp = self.cmd.hf14a_scan()
-        self.device_com.halt()
         if resp == None:
             print("No tag found")
             return resp
@@ -1123,15 +1145,7 @@ examples:
         tag_info["atqa"] = resp[0]["atqa"].hex()
         tag_info["sak"] = resp[0]["sak"].hex()
         tag_info["data"] = []
-        options = {
-            "activate_rf_field": 1,
-            "wait_response": 1,
-            "append_crc": 0,
-            "auto_select": 0,
-            "keep_rf_field": 1,
-            "check_response_crc": 0,
-        }
-
+       
         if self.cmd.isGen4():
             print("Found Gen4:", f"{tag_info['uid'].upper()}")
             options = {
@@ -1143,10 +1157,19 @@ examples:
                 "check_response_crc": 0,
             }
             uid_length_symbol = "01" if len(uid) == 7 else "00"
+            set_uid_length_command = f"CF{pwd}68{uid_length_symbol}"
             resp = self.cmd.hf14a_raw(
                 options=options,
                 resp_timeout_ms=1000,
-                data=bytes.fromhex(f"CF{pwd}68{uid_length_symbol}"),
+                data=bytes.fromhex(set_uid_length_command),
+            )
+            atqa = "0400" if len(uid) == 4 else "4400"
+            sak = "08" if len(uid) == 4 else "18"
+            set_atqa_sak_command = f"CF{pwd}35{atqa}{sak}"
+            resp = self.cmd.hf14a_raw(
+                options=options,
+                resp_timeout_ms=1000,
+                data=bytes.fromhex(set_atqa_sak_command),
             )
             print(f"Writing block 0: {block0.hex().upper()}")
             options["keep_rf_field"] = 0
@@ -1168,11 +1191,12 @@ examples:
         if gen == 1:
             self.gen1a_set_block0(block0)
         elif gen == 2:
-            self.gen2_set_block0(block0)
+            key = str_to_bytes(args.k)
+            self.gen2_set_block0(block0, key, args.b)
         elif gen == 3:
             self.gen3_set_block0(uid, block0, args.lock)
         elif gen == 4:
-            self.gen4_set_block0(block0, uid, pwd=args.p)
+            self.gen4_set_block0(uid, block0, pwd=args.p)
 
 @hf_mf.command("rdbl")
 class HfMfRdbl(MF1AuthArgsUnit):
@@ -1201,8 +1225,13 @@ class HfMfWrbl(MF1WriteBlockArgsUnit):
             raise ArgsParserError("key must include 12 HEX symbols")
         if not re.match(r"^[a-fA-F0-9]{32}$", data):
             raise ArgsParserError("data must include 32 HEX symbols")
+        resp = self.cmd.hf14a_scan()
+        if resp == None:
+            print("No tag found")
+            return resp
+        uid = resp[0]["uid"]
         resp = self.cmd.mf1_write_one_block(
-            args.blk, key_type, bytes.fromhex(key), bytes.fromhex(data)
+            uid, args.blk, key_type, bytes.fromhex(key), bytes.fromhex(data)
         )
         print(f" - {CG}Write done.{C0}" if resp else f" - {CR}Write fail.{C0}")
 
@@ -1222,6 +1251,8 @@ class HfMfCview(DeviceRequiredUnit):
 
     def on_exec(self, args: argparse.Namespace):
         result = self.cmd.hfmf_cview()
+        if result is None:
+            return
         uid = result["uid"]
         # check args if file is set
         if args.file:

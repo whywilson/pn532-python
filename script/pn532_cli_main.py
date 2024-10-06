@@ -13,14 +13,22 @@ from pn532_utils import CR, CG, CY, C0, CM
 import pn532_com
 from pn532_com import DEBUG
 
-# create by http://patorjk.com/software/taag/#p=display&f=ANSI%20Shadow&t=Chameleon%20Ultra
-BANNER = """
+BANNER_PN532Killer = """
 ██████╗ ███╗   ██╗███████╗██████╗ ██████╗ ██╗  ██╗██╗██╗     ██╗     ███████╗██████╗ 
 ██╔══██╗████╗  ██║██╔════╝╚════██╗╚════██╗██║ ██╔╝██║██║     ██║     ██╔════╝██╔══██╗
 ██████╔╝██╔██╗ ██║███████╗ █████╔╝ █████╔╝█████╔╝ ██║██║     ██║     █████╗  ██████╔╝
 ██╔═══╝ ██║╚██╗██║╚════██║ ╚═══██╗██╔═══╝ ██╔═██╗ ██║██║     ██║     ██╔══╝  ██╔══██╗
 ██║     ██║ ╚████║███████║██████╔╝███████╗██║  ██╗██║███████╗███████╗███████╗██║  ██║
 ╚═╝     ╚═╝  ╚═══╝╚══════╝╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝
+"""
+# https://patorjk.com/software/taag/#p=display&f=ANSI%20Shadow&t=PN532%20CLI
+BANNER = """
+██████╗ ███╗   ██╗███████╗██████╗ ██████╗      ██████╗██╗     ██╗
+██╔══██╗████╗  ██║██╔════╝╚════██╗╚════██╗    ██╔════╝██║     ██║
+██████╔╝██╔██╗ ██║███████╗ █████╔╝ █████╔╝    ██║     ██║     ██║
+██╔═══╝ ██║╚██╗██║╚════██║ ╚═══██╗██╔═══╝     ██║     ██║     ██║
+██║     ██║ ╚████║███████║██████╔╝███████╗    ╚██████╗███████╗██║
+╚═╝     ╚═╝  ╚═══╝╚══════╝╚═════╝ ╚══════╝     ╚═════╝╚══════╝╚═╝
 """
 
 class Pn532CLI:
@@ -129,7 +137,8 @@ class Pn532CLI:
         :return:
         """
         print(f"{CM}{BANNER}{C0}")
-            
+        print(f"{CM}A Python-based CLI for PN532 / PN532Killer{C0}")
+
     def startCLI(self):
         self.completer = pn532_utils.CustomNestedCompleter.from_clitree(pn532_cli_unit.root)
         self.session = prompt_toolkit.PromptSession(completer=self.completer,

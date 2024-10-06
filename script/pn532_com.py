@@ -289,7 +289,6 @@ class Pn532Com:
                         continue
                     # get cmd
                     data_cmd = data_response[1] - 1
-                    # 根据命令执行相应任务
                     if data_cmd in self.wait_response_map:
                         if DEBUG:
                             print(f"<=   {CY}{data_buffer.hex().upper()}{C0}")
@@ -306,7 +305,7 @@ class Pn532Com:
                                 response = Response(
                                     data_cmd,
                                     data_response[2],
-                                    data_response[3 : data_length - 2],
+                                    data_response[3: data_length],
                                 )
                         self.wait_response_map[data_cmd]["response"] = response
                         fn_call = self.wait_response_map[data_cmd].get("callback")
