@@ -61,6 +61,7 @@ class Pn532CMD:
                 atqa, sak, uidlen = struct.unpack_from("!2s1sB", resp.data, offset)
                 offset += struct.calcsize("!2s1sB")
                 uid = resp.data[offset : offset + uidlen]
+                ats = resp.data[offset + uidlen :]
                 offset += uidlen
                 data.append(
                     {
@@ -69,6 +70,7 @@ class Pn532CMD:
                         "atqa": atqa,
                         "sak": sak,
                         "uid": uid,
+                        "ats": ats
                     }
                 )
                 break
