@@ -69,7 +69,8 @@ PN532KillerCapabilities = [
     "HF15ESetWriteProtect",
     "HF15ESetResvEasAfiDsfid",
     "HfMfEload",
-    "HfMfEread"
+    "HfMfEread",
+    "LfEm410xESetId",
 ]
 
 @enum.unique

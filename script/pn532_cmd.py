@@ -544,6 +544,26 @@ class Pn532CMD:
         return Response(Pn532KillerCommand.setEmulatorData, Status.SUCCESS)
 
     @expect_response(Status.SUCCESS)
+    def lf_scan(self):
+        resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b"\x01\x06")
+        if resp.status == Status.SUCCESS:
+            # 01011122334455
+            # tagType[1]tagNum[1]uid[5]
+            offset = 0
+            data = []
+            while offset < len(resp.data):
+                tagType = resp.data[offset]
+                offset += 1
+                tagNum = resp.data[offset]
+                offset += 1
+                uid = resp.data[offset : offset + 5]
+                offset += 5
+                uidHex = uid.hex()
+                uidDec = int.from_bytes(uid, "big")
+                data.append({"tagType": tagType, "tagNum": tagNum, "id": uidHex, "dec": uidDec})
+            resp.parsed = data
+        return resp
+    
     def lf_em4100_set_id(self, slot, uid: bytes):
         """
         Set id for EM4100 emulator

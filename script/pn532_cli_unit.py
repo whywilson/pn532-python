@@ -1283,6 +1283,48 @@ class HfMfCview(DeviceRequiredUnit):
                     f.write(bytes.fromhex(block))
                 print(f"Dump saved to {fileName}.bin")
 
+@lf.command("scan")
+class LfScan(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Scan LF tag, and print basic information"
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        resp = self.cmd.lf_scan()
+        if resp is not None:
+            for data_tag in resp:
+                print(f"- ID  : {data_tag['id'].upper()}")
+                if "dec" in data_tag:
+                    print(f"  DEC : {data_tag['dec']}")
+        else:
+            print("LF Tag no found")
+
+@lf_em_410x.command("esetid")
+class LfEm410xESetId(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set ID of EM410x Emulation"
+        parser.add_argument(
+            "-i",
+            type=str,
+            metavar="<hex>",
+            required=True,
+            help="ID to set (10 bytes)",
+        )
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        id = args.i
+        if not re.match(r"^[a-fA-F0-9]{20}$", id):
+            print("ID must be 10 bytes hex")
+            return
+        resp = self.cmd.lf_em4100_set_id(args.slot - 1, bytes.fromhex(id))
+        print(f"Set Slot {args.slot} ID to {id} {CY}{'Success' if resp else 'Fail'}{C0}")
+
 @ntag.command("emulate")
 class NtagEmulate(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
