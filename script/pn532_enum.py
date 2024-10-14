@@ -64,6 +64,8 @@ PN532KillerCapabilities = [
     "HWModeEmulator",
     "HF15Scan",
     "HfSniffSetUid",
+    "HF15SetUid",
+    "HF15SetBlockSize",
     "HF15ESetUid",
     "HF15ESetBlock",
     "HF15ESetWriteProtect",

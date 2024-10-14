@@ -564,48 +564,57 @@ class Pn532CMD:
             resp.parsed = data
         return resp
     
-    def lf_em4100_set_id(self, slot, uid: bytes):
+    def lf_em4100_eset_id(self, slot, uid: bytes):
         """
         Set id for EM4100 emulator
         """
         resp_set = self.upload_data_block(type = 0x04, slot = slot + 0x12, data = uid)
         resp_save = self.upload_data_block_done(type = 0x04, slot = slot + 18)
         return resp_set and resp_save
+    
+    def hf_15_set_gen1_uid(self, uid: bytes):
+        pass
 
-    def hf_15_set_uid(self, slot, uid: bytes):
+    def hf_15_set_gen2_uid(self, uid: bytes):
+        pass
+
+    def hf_15_set_gen2_block_size(self, size: int):
+        pass
+
+    def hf_15_eset_uid(self, slot, uid: bytes):
         """
         Set uid for 15 emulator
         """
         # data is 0xFE, 0x00 + uid
         resp_set = self.upload_data_block(type = 0x03, slot = slot + 0x1A, index = 0xFE00, data = uid[::-1])
-        resp_save = self.hf_15_save(slot)
+        resp_save = self.hf_15_esave(slot)
         return resp_set and resp_save
 
-    def hf_15_set_block(self, slot, index,  data: bytes):
+    def hf_15_eset_block(self, slot, index,  data: bytes):
         """
         Set block data for 15 emulator on block index
         """
         resp_set = self.upload_data_block(type = 0x03, slot = slot + 0x1A, index = index, data = data)
-        resp_save = self.hf_15_save(slot)
+        resp_save = self.hf_15_esave(slot)
         return resp_set and resp_save
 
-    def hf_15_set_resv_eas_afi_dsfid(self, slot, data):
+    def hf_15_eset_resv_eas_afi_dsfid(self, slot, data):
         """
         Set Resv EAS AFI DSFID for 15 emulator
         """
         resp_set = self.upload_data_block(type = 0x03, slot = slot + 0x1A, index = 0xFC00, data = data)
-        resp_save = self.hf_15_save(slot)
+        resp_save = self.hf_15_esave(slot)
         return resp_set and resp_save
 
-    def hf_15_set_write_protect(self, slot, data):
+    def hf_15_eset_write_protect(self, slot, data):
         """
         Set write protect for 15 emulator
         """
         resp_set = self.upload_data_block(type = 0x03, slot = slot + 0x1A, index = 0xFB00, data = data)
-        resp_save = self.hf_15_save(slot)
+        resp_save = self.hf_15_esave(slot)
         return resp_set and resp_save
 
-    def hf_15_save(self, slot):
+    def hf_15_esave(self, slot):
         """
         Save 15 emulator data
         """

@@ -522,6 +522,69 @@ class HF15Scan(DeviceRequiredUnit):
     def on_exec(self, args: argparse.Namespace):
         self.scan()
 
+@hf_15.command("setuid")
+class HF15SetUid(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set UID of Magic ISO15693 tag"
+        parser.add_argument(
+            "-u",
+            type=str,
+            required=True,
+            help="UID to set (8 bytes, start with E0)",
+        )
+        parser.add_argument(
+            "-g",
+            "--gen",
+            type=int,
+            required=False,
+            default=1,
+            help="Generation to set",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        uid = args.u
+        if not re.match(r"^[a-fA-F0-9]{16}$", uid):
+            print("UID must be 8 bytes hex")
+            return
+        if uid[0:2].lower() != "e0":
+            print("UID must start with E0")
+            return
+        if args.gen == 1:
+            resp = self.cmd.hf_15_set_gen1_uid(bytes.fromhex(uid))
+            print(f"Set UID to {uid} {CY}{'Success' if resp else 'Fail'}{C0}")
+        elif args.gen ==2:
+            resp = self.cmd.hf_15_set_gen2_uid(bytes.fromhex(uid))
+            print(f"Set UID to {uid} {CY}{'Success' if resp else 'Fail'}{C0}")
+        else:
+            print("Generation must be 1 or 2")
+            return
+
+@hf_15.command("setblocksize")
+class HF15SetBlockSize(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set block size of Gen2 Magic ISO15693 tag"
+        parser.add_argument(
+            "-s",
+            "--size",
+            default=64,
+            type=int,
+            required=True,
+            metavar="<dec>",
+            help="Block size to set",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        # block size must between 4 to 64
+        if args.size < 4 or args.size > 64:
+            print("Block size must between 4 to 64")
+            return
+        resp = self.cmd.hf_15_set_gen2_block_size(args.size)
+        print(f"Set block size to {args.size} {CY}{'Success' if resp else 'Fail'}{C0}")
+
 @hf_15.command("esetuid")
 class HF15ESetUid(DeviceRequiredUnit):
     # add parameter -u <hex> to set uid(8 bytes, start with E0)
@@ -549,7 +612,7 @@ class HF15ESetUid(DeviceRequiredUnit):
         if uid[0:2].lower() != "e0":
             print("UID must start with E0")
             return
-        resp = self.cmd.hf_15_set_uid(args.slot - 1, bytes.fromhex(uid))
+        resp = self.cmd.hf_15_eset_uid(args.slot - 1, bytes.fromhex(uid))
         print(f"Set Slot {args.slot} UID to {uid} {CY}{'Success' if resp else 'Fail'}{C0}")
 
 @hf_15.command("esetblock")
@@ -583,7 +646,7 @@ class HF15ESetBlock(DeviceRequiredUnit):
         if not re.match(r"^[a-fA-F0-9]{8}$", block):
             print("Block must be 4 bytes hex")
             return
-        resp = self.cmd.hf_15_set_block(args.slot - 1, args.b, bytes.fromhex(block))
+        resp = self.cmd.hf_15_eset_block(args.slot - 1, args.b, bytes.fromhex(block))
         print(f"Set Slot {args.slot} block {args.b} to {block} {CY}{'Success' if resp else 'Fail'}{C0}")
 
 @hf_15.command("eSetwriteprotect")
@@ -605,7 +668,7 @@ class HF15ESetWriteProtect(DeviceRequiredUnit):
         return parser
     
     def on_exec(self, args: argparse.Namespace):
-        resp = self.cmd.hf_15_set_write_protect(args.slot - 1, b'\x01' if args.write else b'\x00')
+        resp = self.cmd.hf_15_eset_write_protect(args.slot - 1, b'\x01' if args.write else b'\x00')
         print(f"Set Slot {args.slot} write protect to {args.write} {CY}{'Success' if resp else 'Fail'}{C0}")
 
 @hf_15.command("eSetResvEasAfiDsfid")
@@ -677,7 +740,7 @@ class HF15ESetResvEasAfiDsfid(DeviceRequiredUnit):
             data += bytes.fromhex(args.dsfid)
         else:
             data += b"\x00"
-        resp = self.cmd.hf_15_set_resv_eas_afi_dsfid(args.slot - 1, data)
+        resp = self.cmd.hf_15_eset_resv_eas_afi_dsfid(args.slot - 1, data)
         print(f"Set Slot {args.slot} Resv, EAS, AFI, DSFID {CY}{'Success' if resp else 'Fail'}{C0}")
 
 @root.command("exit")
@@ -1322,7 +1385,7 @@ class LfEm410xESetId(DeviceRequiredUnit):
         if not re.match(r"^[a-fA-F0-9]{20}$", id):
             print("ID must be 10 bytes hex")
             return
-        resp = self.cmd.lf_em4100_set_id(args.slot - 1, bytes.fromhex(id))
+        resp = self.cmd.lf_em4100_eset_id(args.slot - 1, bytes.fromhex(id))
         print(f"Set Slot {args.slot} ID to {id} {CY}{'Success' if resp else 'Fail'}{C0}")
 
 @ntag.command("emulate")
