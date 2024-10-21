@@ -4,7 +4,7 @@ from typing import Union
 import threading
 
 import pn532_com
-from unit.calc import crc16A
+from unit.calc import crc16A, crc16Ccitt
 from pn532_com import Response, DEBUG
 from pn532_utils import expect_response
 from pn532_enum import Command, MifareCommand, ApduCommand, TagFile, NdefCommand, Status
@@ -391,43 +391,7 @@ class Pn532CMD:
         if len(resp) >= 30:
             return True
         return False
-
-    @expect_response(Status.SUCCESS)
-    def hf15_scan(self):
-        self.device.set_normal_mode()
-        """
-        15 tags in the scanning field.
-
-        :return:
-        """
-        resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b"\x01\x05")
-        if resp.status == Status.SUCCESS:
-            # 010188888888332211E0
-            # tagType[1]tagNum[1]uid[8, reversed]
-            offset = 0
-            data = []
-            while offset < len(resp.data):
-                tagType = resp.data[offset]
-                offset += 1
-                tagNum = resp.data[offset]
-                offset += 1
-                uid = resp.data[offset : offset + 8]
-                offset += 8
-                # reversed uid
-                uidHex = uid.hex()
-                uidHex = (
-                    uidHex[12:14]
-                    + uidHex[10:12]
-                    + uidHex[8:10]
-                    + uidHex[6:8]
-                    + uidHex[4:6]
-                    + uidHex[2:4]
-                    + uidHex[0:2]
-                )
-                data.append({"tagType": tagType, "tagNum": tagNum, "uid": uidHex})
-            resp.parsed = data
-        return resp
-
+ 
     def mf1_auth_one_key_block(self, block, type_value: MfcKeyType, key, uid) -> bool:
         format_str = f"!BBB6s{len(uid)}s"
         data = struct.pack(format_str, 0x01, type_value, block, key, uid)
@@ -572,14 +536,107 @@ class Pn532CMD:
         resp_save = self.upload_data_block_done(type = 0x04, slot = slot + 18)
         return resp_set and resp_save
     
-    def hf_15_set_gen1_uid(self, uid: bytes):
-        pass
+    @expect_response(Status.SUCCESS)
+    def hf_15_scan(self):
+        self.device.set_normal_mode()
+        """
+        15 tags in the scanning field.
+
+        :return:
+        """
+        resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b"\x01\x05")
+        if resp.status == Status.SUCCESS:
+            # 010188888888332211E0
+            # tagType[1]tagNum[1]uid[8, reversed]
+            offset = 0
+            data = []
+            if len(resp.data) < 10:
+                return resp
+            while offset < len(resp.data):
+                tagType = resp.data[offset]
+                offset += 1
+                tagNum = resp.data[offset]
+                offset += 1
+                uid = resp.data[offset : offset + 8]
+                offset += 8
+                # reversed uid
+                uidHex = uid.hex()
+                uidHex = (
+                    uidHex[14:16]
+                    + uidHex[12:14]
+                    + uidHex[10:12]
+                    + uidHex[8:10]
+                    + uidHex[6:8]
+                    + uidHex[4:6]
+                    + uidHex[2:4]
+                    + uidHex[0:2]
+                )
+                data.append({"tagType": tagType, "tagNum": tagNum, "uid": uidHex})
+            resp.parsed = data
+        return resp
+
+    def hf_15_read_block(self, block):
+        command = b"\x01\x20" + bytes([block])
+        resp = self.device.send_cmd_sync(Command.InDataExchange, command)
+        if len(resp.data) == 5 and resp.data[0] == 0x00:
+            return resp.data[1:]
+        return None
+        
+    def hf_15_write_block(self, block, data):
+        command = b"\x01\x21" + bytes([block]) + data
+        resp = self.device.send_cmd_sync(Command.InDataExchange, command)
+        return len(resp.data) == 1 and resp.data[0] == 0x00
+
+    def hf_15_raw(self, options, resp_timeout_ms=100, data=[]) -> Response:
+        """
+        Send raw cmd to 15 tag.
+
+        :param options:
+        :param resp_timeout_ms:
+        :param data:
+        :param bit_owned_by_the_last_byte:
+        :return:
+        """
+
+        class CStruct(ctypes.BigEndianStructure):
+            _fields_ = [
+                ("append_crc", ctypes.c_uint8, 1),
+                ("no_check_response", ctypes.c_uint8, 1)
+            ]
+
+        cs = CStruct()
+        cs.append_crc = options["append_crc"]
+        cs.no_check_response = options["no_check_response"]
+
+        if cs.append_crc:
+            data = bytes(data) + crc16Ccitt(bytes(data))
+        data = bytes([0x01]) + data  # Insert Tag Num
+        resp = self.device.send_cmd_sync(Command.InDataExchange, data, timeout=1)
+        resp.parsed = resp.data
+
+        if DEBUG:
+            print(
+                f"Send: {bytes(data).hex().upper()} Status: {hex(resp.status)[2:].upper()}, Data: {resp.parsed.hex().upper()}"
+            )
+        return resp
 
     def hf_15_set_gen2_uid(self, uid: bytes):
-        pass
-
+        # 02e0094044556677 44556677 is the last 4 bytes of uid
+        command1 = b"\x02\xE0\x09\x40" + uid[4:][::-1]
+        resp1 = self.device.send_cmd_sync(Command.InDataExchange, command1)
+        print(f"Set uid {uid.hex()}: {resp1.data.hex().upper()}")
+        # 02e00941332211E0 332211E0 is the first 4 bytes of uid
+        command2 = b"\x02\xE0\x09\x41" + uid[:4][::-1]
+        resp2 = self.device.send_cmd_sync(Command.InDataExchange, command2)
+        print(f"Set uid {uid.hex()}: {resp2.data.hex().upper()}")
+        return True
+        
     def hf_15_set_gen2_block_size(self, size: int):
-        pass
+        # 02e009473f038b00 3f is the block size
+        command = b"\x02\xE0\x09\x47" + bytes([size - 1]) + b"\x03\x8b\x00"
+        resp = self.hf_15_raw(options = {"append_crc": 1, "no_check_response": 0}, data = command)
+        print(f"Set block size {size}: {resp.data.hex().upper()}")
+        return len(resp.data) == 1 and resp.data[0] == 0x00
 
     def hf_15_eset_uid(self, slot, uid: bytes):
         """

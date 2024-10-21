@@ -295,7 +295,7 @@ class Pn532Com:
                         # update wait_response_map
                         response = Response(data_cmd, Status.SUCCESS, data_response[2:])
                         if (
-                            data_cmd == Command.InCommunicateThru
+                            data_cmd == Command.InCommunicateThru or data_cmd == Command.InDataExchange
                             and len(data_response) > 2
                         ):
                             response = Response(

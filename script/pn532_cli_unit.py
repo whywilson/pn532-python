@@ -377,14 +377,14 @@ class HF14AScan(DeviceRequiredUnit):
         resp = self.cmd.hf14a_scan()
         if resp is not None:
             for data_tag in resp:
-                print(f"- UID  : {data_tag['uid'].hex().upper()}")
+                print(f"- UID: {data_tag['uid'].hex().upper()}")
                 print(
-                    f"- ATQA : {data_tag['atqa'].hex().upper()} "
+                    f"- ATQA: {data_tag['atqa'].hex().upper()} "
                     f"(0x{int.from_bytes(data_tag['atqa'], byteorder='little'):04x})"
                 )
-                print(f"- SAK  : {data_tag['sak'].hex().upper()}")
+                print(f"- SAK: {data_tag['sak'].hex().upper()}")
                 if "ats" in data_tag and len(data_tag["ats"]) > 0:
-                    print(f"- ATS  : {data_tag['ats'].hex().upper()}")
+                    print(f"- ATS: {data_tag['ats'].hex().upper()}")
         else:
             print("ISO14443-A Tag no found")
 
@@ -512,38 +512,97 @@ class HF15Scan(DeviceRequiredUnit):
         return parser
 
     def scan(self):
-        resp = self.cmd.hf15_scan()
+        resp = self.cmd.hf_15_scan()
         if resp is not None:
             for data_tag in resp:
-                print(f"- UID  : {data_tag['uid'].upper()}")
+                print(f"- UID: {data_tag['uid'].upper()}")
         else:
             print("ISO15693 Tag no found")
 
     def on_exec(self, args: argparse.Namespace):
         self.scan()
 
-@hf_15.command("setuid")
-class HF15SetUid(DeviceRequiredUnit):
+@hf_15.command("rdbl")
+class HF15Rdbl(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
-        parser.description = "Set UID of Magic ISO15693 tag"
+        parser.description = "Read block data from ISO15693 tag"
+        parser.add_argument(
+            "-b",
+            "--block",
+            type=int,
+            required=True,
+            metavar="<dec>",
+            help="Block to read",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        resp = self.cmd.hf_15_scan()
+        if resp is None:
+            print("ISO15693 Tag no found")
+            return
+        block = args.block
+        resp = self.cmd.hf_15_read_block(block)
+        if resp is not None:
+            print(f"Block {block}: {resp.hex().upper()}")
+        else:
+            print(f"Read block {block} failed")
+
+@hf_15.command("wrbl")
+class HF15Wrbl(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Write block data to ISO15693 tag"
+        parser.add_argument(
+            "-b",
+            "--block",
+            type=int,
+            required=True,
+            metavar="<dec>",
+            help="Block to write",
+        )
+        parser.add_argument(
+            "-d",
+            "--data",
+            type=str,
+            required=True,
+            metavar="<hex>",
+            help="Data to write (4 bytes)",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        resp = self.cmd.hf_15_scan()
+        if resp is None:
+            print("ISO15693 Tag no found")
+            return
+        block = args.block
+        data = args.data
+        if not re.match(r"^[a-fA-F0-9]{8}$", data):
+            print("Data must be 4 bytes hex")
+            return
+        resp = self.cmd.hf_15_write_block(block, bytes.fromhex(data))
+        print(f"Write block {block} {CY}{'Success' if resp else 'Fail'}{C0}")
+
+@hf_15.command("gen2uid")
+class HF15Gen2Uid(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set UID of Gen2 Magic ISO15693 tag"
         parser.add_argument(
             "-u",
             type=str,
             required=True,
             help="UID to set (8 bytes, start with E0)",
         )
-        parser.add_argument(
-            "-g",
-            "--gen",
-            type=int,
-            required=False,
-            default=1,
-            help="Generation to set",
-        )
         return parser
 
     def on_exec(self, args: argparse.Namespace):
+        resp_scan = self.cmd.hf_15_scan()
+        if resp_scan is None:
+            print("ISO15693 Tag no found")
+            return
         uid = args.u
         if not re.match(r"^[a-fA-F0-9]{16}$", uid):
             print("UID must be 8 bytes hex")
@@ -551,18 +610,11 @@ class HF15SetUid(DeviceRequiredUnit):
         if uid[0:2].lower() != "e0":
             print("UID must start with E0")
             return
-        if args.gen == 1:
-            resp = self.cmd.hf_15_set_gen1_uid(bytes.fromhex(uid))
-            print(f"Set UID to {uid} {CY}{'Success' if resp else 'Fail'}{C0}")
-        elif args.gen ==2:
-            resp = self.cmd.hf_15_set_gen2_uid(bytes.fromhex(uid))
-            print(f"Set UID to {uid} {CY}{'Success' if resp else 'Fail'}{C0}")
-        else:
-            print("Generation must be 1 or 2")
-            return
+        resp = self.cmd.hf_15_set_gen2_uid(bytes.fromhex(uid))
+        print(f"Set UID to {uid} {CY}{'Success' if resp else 'Fail'}{C0}")
 
-@hf_15.command("setblocksize")
-class HF15SetBlockSize(DeviceRequiredUnit):
+@hf_15.command("gen2blksize")
+class HF15Gen2BlkSize(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Set block size of Gen2 Magic ISO15693 tag"
@@ -578,6 +630,10 @@ class HF15SetBlockSize(DeviceRequiredUnit):
         return parser
 
     def on_exec(self, args: argparse.Namespace):
+        resp_scan = self.cmd.hf_15_scan()
+        if resp_scan is None:
+            print("ISO15693 Tag no found")
+            return
         # block size must between 4 to 64
         if args.size < 4 or args.size > 64:
             print("Block size must between 4 to 64")

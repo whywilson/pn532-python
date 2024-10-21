@@ -28,3 +28,17 @@ def crc16A(data: bytes) -> bytes:
 
     crc = crc & 0xFFFF
     return crc.to_bytes(2, byteorder="little")
+
+def crc16Ccitt(data: bytes) -> bytes:
+    crc_preset = 0xFFFF
+    crc_poly = 0x8408
+    
+    crc = crc_preset 
+    for b in data:
+        crc = crc ^ b
+        for _ in range(8):
+            if crc & 1:
+                crc = (crc >> 1) ^ crc_poly
+            else:
+                crc >>= 1
+    return (crc ^ crc_preset).to_bytes(2, byteorder="little")
