@@ -393,6 +393,8 @@ class Pn532CMD:
         return False
  
     def mf1_auth_one_key_block(self, block, type_value: MfcKeyType, key, uid) -> bool:
+        if len(uid) > 4:
+            uid = uid[-4:]
         format_str = f"!BBB6s{len(uid)}s"
         data = struct.pack(format_str, 0x01, type_value, block, key, uid)
         resp = self.device.send_cmd_sync(Command.InDataExchange, data)
@@ -403,16 +405,16 @@ class Pn532CMD:
         if resp == None:
             print("No tag found")
             return resp
-
+        uidID1 = bytes(resp[0]["uid"])
         auth_result = self.mf1_auth_one_key_block(
-            block, type_value, key, bytes(resp[0]["uid"])
+            block, type_value, key, uidID1
         )
         if not auth_result:
             return Response(Command.InDataExchange, Status.MF_ERR_AUTH)
         data = struct.pack("!BBB", 0x01, MifareCommand.MfReadBlock, block)
         resp = self.device.send_cmd_sync(Command.InDataExchange, data)
-        if len(resp.data) >= 16 and resp.data[0] == Status.HF_TAG_OK:
-            resp.parsed = resp.data[1:]
+        if len(resp.data) >= 16:
+            resp.parsed = resp.data
             if self.is_mf_trailler_block(block):
                 if type_value == MfcKeyType.A:
                     resp.parsed = key + resp.parsed[6:]
