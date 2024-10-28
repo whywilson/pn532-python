@@ -576,6 +576,22 @@ class Pn532CMD:
                 data.append({"tagType": tagType, "tagNum": tagNum, "uid": uidHex})
             resp.parsed = data
         return resp
+    
+    def hf_15_info(self):
+        command = b"\x02\x2B"
+        resp = self.hf_15_raw(options = {"select_tag": 0, "append_crc": 1, "no_check_response": 0}, data = command)
+        #example: 00(status) 0F(flags) 77 66 55 44 33 22 11 E0(uid7 to uid0) 00(Dsfid) 00(Afi) 07(block size) 03 8B(IcReference) F9 4D
+        if len(resp.data) > 15:
+            return {
+                "flags": resp.data[1],
+                "uid": resp.data[2:10][::-1],
+                "dsfid": resp.data[10],
+                "afi": resp.data[11],
+                "block_size": resp.data[12] + 1,
+                "ic_reference": resp.data[14],
+            }
+        return None
+        
 
     def hf_15_read_block(self, block):
         command = b"\x01\x20" + bytes([block])
@@ -602,43 +618,49 @@ class Pn532CMD:
 
         class CStruct(ctypes.BigEndianStructure):
             _fields_ = [
+                ("select_tag", ctypes.c_uint8, 1),
                 ("append_crc", ctypes.c_uint8, 1),
                 ("no_check_response", ctypes.c_uint8, 1)
             ]
 
         cs = CStruct()
+        cs.select_tag = options["select_tag"]
         cs.append_crc = options["append_crc"]
         cs.no_check_response = options["no_check_response"]
-
+        if cs.select_tag:
+            self.hf_15_scan()
         if cs.append_crc:
             data = bytes(data) + crc16Ccitt(bytes(data))
-        data = bytes([0x01]) + data  # Insert Tag Num
-        resp = self.device.send_cmd_sync(Command.InDataExchange, data, timeout=1)
+        req_ack = 0x80
+        if cs.no_check_response:
+            req_ack = 0x00
+        data = bytes([req_ack, 0x00]) + data  # Insert Tag Num
+        resp = self.device.send_cmd_sync(Command.InCommunicateThru, data, timeout=1)
         resp.parsed = resp.data
 
         if DEBUG:
             print(
-                f"Send: {bytes(data).hex().upper()} Status: {hex(resp.status)[2:].upper()}, Data: {resp.parsed.hex().upper()}"
+                f"Send: {bytes(data).hex().upper()} Status: {hex(resp.status)}, Data: {resp.parsed.hex().upper()}"
             )
         return resp
 
     def hf_15_set_gen2_uid(self, uid: bytes):
         # 02e0094044556677 44556677 is the last 4 bytes of uid
         command1 = b"\x02\xE0\x09\x40" + uid[4:][::-1]
-        resp1 = self.device.send_cmd_sync(Command.InDataExchange, command1)
-        print(f"Set uid {uid.hex()}: {resp1.data.hex().upper()}")
+        resp1 = self.hf_15_raw(options = {"select_tag": 0, "append_crc": 1, "no_check_response": 1}, data = command1)
+        # print(f"Set uid1 {uid.hex()}: {resp1.data.hex().upper()}")
         # 02e00941332211E0 332211E0 is the first 4 bytes of uid
         command2 = b"\x02\xE0\x09\x41" + uid[:4][::-1]
-        resp2 = self.device.send_cmd_sync(Command.InDataExchange, command2)
-        print(f"Set uid {uid.hex()}: {resp2.data.hex().upper()}")
+        resp2 = self.hf_15_raw(options = {"select_tag": 0, "append_crc": 1, "no_check_response": 1}, data = command2)
+        # print(f"Set uid2 {uid.hex()}: {resp2.data.hex().upper()}")
         return True
         
     def hf_15_set_gen2_block_size(self, size: int):
         # 02e009473f038b00 3f is the block size
         command = b"\x02\xE0\x09\x47" + bytes([size - 1]) + b"\x03\x8b\x00"
-        resp = self.hf_15_raw(options = {"append_crc": 1, "no_check_response": 0}, data = command)
-        print(f"Set block size {size}: {resp.data.hex().upper()}")
-        return len(resp.data) == 1 and resp.data[0] == 0x00
+        resp = self.hf_15_raw(options = {"select_tag": 0, "append_crc": 1, "no_check_response": 1}, data = command)
+        print(f"Set block size: {size}")
+        return True
 
     def hf_15_eset_uid(self, slot, uid: bytes):
         """

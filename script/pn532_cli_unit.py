@@ -521,6 +521,28 @@ class HF15Scan(DeviceRequiredUnit):
 
     def on_exec(self, args: argparse.Namespace):
         self.scan()
+        
+@hf_15.command("info")
+class HF15Info(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Get ISO15693 tag information"
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        resp = self.cmd.hf_15_scan()
+        if resp is None:
+            print("ISO15693 Tag no found")
+            return
+        resp = self.cmd.hf_15_info()
+        if resp is not None:
+            print(f"UID: {resp['uid'].hex().upper()}")
+            print(f"DSFID: {resp['dsfid']}")
+            print(f"AFI: {resp['afi']}")
+            print(f"Block size: {resp['block_size']}")
+            print(f"IC reference: 0x{resp['ic_reference']:02X}")
+        else:
+            print("Get ISO15693 tag information failed")
 
 @hf_15.command("rdbl")
 class HF15Rdbl(DeviceRequiredUnit):
@@ -584,6 +606,65 @@ class HF15Wrbl(DeviceRequiredUnit):
             return
         resp = self.cmd.hf_15_write_block(block, bytes.fromhex(data))
         print(f"Write block {block} {CY}{'Success' if resp else 'Fail'}{C0}")
+
+@hf_15.command("raw")
+class HF15Raw(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.formatter_class = argparse.RawDescriptionHelpFormatter
+        parser.description = "Send iso15693 raw command"
+        parser.add_argument(
+            "-d", type=str, metavar="<hex>", required=True, help="Hex data to be sent"
+        )
+        # add crc
+        parser.add_argument(
+            "-c",
+            "--crc",
+            help="Calculate and append CRC",
+            action="store_true",
+            default=False,
+        ),
+        parser.add_argument(
+            "-r",
+            "--no-response",
+            help="Do not read response",
+            action="store_true",
+            default=False,
+        )
+        return parser
+    
+    def on_exec(self, args: argparse.Namespace):
+        data: str = args.d
+        if data is not None:
+            data = data.replace(" ", "")
+            if re.match(r"^[0-9a-fA-F]+$", data):
+                if len(data) % 2 != 0:
+                    print(
+                        f" [!] {CR}The length of the data must be an integer multiple of 2.{C0}"
+                    )
+                    return
+                else:
+                    data_bytes = bytes.fromhex(data)
+            else:
+                print(f" [!] {CR}The data must be a HEX string{C0}")
+                return
+        else:
+            data_bytes = []
+        options = {"append_crc": 0, "no_check_response": 0}
+        if args.crc:
+            options["append_crc"] = 1
+        if args.no_response:
+            options["no_check_response"] = 1
+        resp = self.cmd.hf_15_raw(options, data=data_bytes)
+        if args.no_response:
+            print(f" [*] {CY}No response{C0}")
+        else:
+            print(
+                " - "
+                + " ".join(
+                    [hex(byte).replace("0x", "").rjust(2, "0").upper() for byte in resp.data]
+                )
+            )
 
 @hf_15.command("gen2uid")
 class HF15Gen2Uid(DeviceRequiredUnit):

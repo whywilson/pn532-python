@@ -9,7 +9,7 @@ from pn532_enum import Command, Pn532KillerCommand, Status
 from pn532_enum import BasicCapabilities, PN532Capabilities, PN532KillerCapabilities
 from pn532_utils import CC, CB, CG, C0, CY, CR
 
-DEBUG = False
+DEBUG = False 
 THREAD_BLOCKING_TIMEOUT = 0.1
 class NotOpenException(Exception):
     """
