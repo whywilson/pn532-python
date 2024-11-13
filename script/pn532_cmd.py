@@ -512,11 +512,15 @@ class Pn532CMD:
     @expect_response(Status.SUCCESS)
     def lf_scan(self):
         resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b"\x01\x06")
+        resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b"\x01\x06")
         if resp.status == Status.SUCCESS:
             # 01011122334455
             # tagType[1]tagNum[1]uid[5]
             offset = 0
             data = []
+            if len(resp.data) < 7:
+                resp.parsed = None
+                return resp
             while offset < len(resp.data):
                 tagType = resp.data[offset]
                 offset += 1
@@ -655,11 +659,14 @@ class Pn532CMD:
         # print(f"Set uid2 {uid.hex()}: {resp2.data.hex().upper()}")
         return True
         
-    def hf_15_set_gen2_block_size(self, size: int):
-        # 02e009473f038b00 3f is the block size
-        command = b"\x02\xE0\x09\x47" + bytes([size - 1]) + b"\x03\x8b\x00"
-        resp = self.hf_15_raw(options = {"select_tag": 0, "append_crc": 1, "no_check_response": 1}, data = command)
-        print(f"Set block size: {size}")
+    def hf_15_set_gen2_config(self, size: int, afi: int, dsfid: int, ic_reference: int):
+        # 02e00946 00 00 00 00: last 2 byte is afi and dsfid
+        command = b"\x02\xE0\x09\x46\x00\x00" + bytes([afi]) + bytes([dsfid])
+        self.hf_15_raw(options = {"select_tag": 0, "append_crc": 1, "no_check_response": 1}, data = command)
+        # 02e00947 3f 03 8b 00: 3f is block size, 8b is ic reference
+        command = b"\x02\xE0\x09\x47" + bytes([size - 1]) + b"\x03" + bytes([ic_reference]) + b"\x00"
+        self.hf_15_raw(options = {"select_tag": 0, "append_crc": 1, "no_check_response": 1}, data = command)
+        print(f"Config: Size {size}, AFI 0x{afi:02X}, DSFID 0x{dsfid:02X}, IC Reference 0x{ic_reference:02X}")
         return True
 
     def hf_15_eset_uid(self, slot, uid: bytes):

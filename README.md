@@ -14,7 +14,7 @@ python pn532_cli_main.py
 ```
 
 ## Requirements
-- Python 3.5
+- Python 3.9+
 - pySerial  
 - colorama  
 - prompt-toolkit  

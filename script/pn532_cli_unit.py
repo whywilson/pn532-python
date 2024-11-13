@@ -537,10 +537,10 @@ class HF15Info(DeviceRequiredUnit):
         resp = self.cmd.hf_15_info()
         if resp is not None:
             print(f"UID: {resp['uid'].hex().upper()}")
-            print(f"DSFID: {resp['dsfid']}")
-            print(f"AFI: {resp['afi']}")
+            print(f"AFI: 0x{resp['afi']:02X}")
+            print(f"DSFID: 0x{resp['dsfid']:02X}")
+            print(f"IC Reference: 0x{resp['ic_reference']:02X}")
             print(f"Block size: {resp['block_size']}")
-            print(f"IC reference: 0x{resp['ic_reference']:02X}")
         else:
             print("Get ISO15693 tag information failed")
 
@@ -629,6 +629,14 @@ class HF15Raw(DeviceRequiredUnit):
             "--no-response",
             help="Do not read response",
             action="store_true",
+            default=True,
+        ),
+        # add select_tag
+        parser.add_argument(
+            "-sc",
+            "--select-tag",
+            help="Active signal field ON with select",
+            action="store_true",
             default=False,
         )
         return parser
@@ -651,6 +659,8 @@ class HF15Raw(DeviceRequiredUnit):
         else:
             data_bytes = []
         options = {"append_crc": 0, "no_check_response": 0}
+        if args.select_tag:
+            options["select_tag"] = 1
         if args.crc:
             options["append_crc"] = 1
         if args.no_response:
@@ -694,8 +704,8 @@ class HF15Gen2Uid(DeviceRequiredUnit):
         resp = self.cmd.hf_15_set_gen2_uid(bytes.fromhex(uid))
         print(f"Set UID to {uid} {CY}{'Success' if resp else 'Fail'}{C0}")
 
-@hf_15.command("gen2blksize")
-class HF15Gen2BlkSize(DeviceRequiredUnit):
+@hf_15.command("gen2config")
+class HF15Gen2Config(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Set block size of Gen2 Magic ISO15693 tag"
@@ -708,6 +718,33 @@ class HF15Gen2BlkSize(DeviceRequiredUnit):
             metavar="<dec>",
             help="Block size to set",
         )
+        parser.add_argument(
+            "-a",
+            "--afi",
+            default=0x00,
+            type=str,
+            required=False,
+            metavar="<hex>",
+            help="AFI on hex value",
+        )
+        parser.add_argument(
+            "-d",
+            "--dsfid",
+            default=0x00,
+            type=str,
+            required=False,
+            metavar="<hex>",
+            help="DSFID on hex value",
+        )        
+        parser.add_argument(
+            "-i",
+            "--ic",
+            default=0x00,
+            type=str,
+            required=False,
+            metavar="<hex>",
+            help="IC on hex value",
+        )
         return parser
 
     def on_exec(self, args: argparse.Namespace):
@@ -715,12 +752,31 @@ class HF15Gen2BlkSize(DeviceRequiredUnit):
         if resp_scan is None:
             print("ISO15693 Tag no found")
             return
-        # block size must between 4 to 64
-        if args.size < 4 or args.size > 64:
-            print("Block size must between 4 to 64")
+        # block size must between 4 to 256
+        if args.size < 0 or args.size > 256:
+            print("Block size must between 0 to 256")
             return
-        resp = self.cmd.hf_15_set_gen2_block_size(args.size)
-        print(f"Set block size to {args.size} {CY}{'Success' if resp else 'Fail'}{C0}")
+        if args.afi is not None:
+            if not re.match(r"^[a-fA-F0-9]{2}$", args.afi):
+                print("AFI must be 1 byte hex")
+                return
+
+        args.afi = int(args.afi, 16) if args.afi is not None else 0
+        if args.dsfid is not None:
+            if not re.match(r"^[a-fA-F0-9]{2}$", args.dsfid):
+                print("DSFID must be 1 byte hex")
+                return
+
+        args.dsfid = int(args.dsfid, 16) if args.dsfid is not None else 0
+        if args.ic is not None:
+            if not re.match(r"^[a-fA-F0-9]{2}$", args.ic):
+                print("IC must be 1 byte hex")
+                return
+
+        args.ic = int(args.ic, 16) if args.ic is not None else 0
+        
+        resp = self.cmd.hf_15_set_gen2_config(args.size, args.afi, args.dsfid, args.ic)
+        print(f"Config Gen2 Magic ISO15693 tag {CY}{'Success' if resp else 'Fail'}{C0}")
 
 @hf_15.command("esetuid")
 class HF15ESetUid(DeviceRequiredUnit):
@@ -1494,8 +1550,8 @@ class LfScan(DeviceRequiredUnit):
         resp = self.cmd.lf_scan()
         if resp is not None:
             for data_tag in resp:
-                print(f"- ID  : {data_tag['id'].upper()}")
-                if "dec" in data_tag:
+                if "dec" in data_tag:                
+                    print(f"- ID  : {data_tag['id'].upper()}")
                     print(f"  DEC : {data_tag['dec']}")
         else:
             print("LF Tag no found")

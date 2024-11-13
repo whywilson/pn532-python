@@ -69,13 +69,14 @@ PN532KillerCapabilities = [
     "HF15Raw",
     "HfSniffSetUid",
     "HF15Gen2Uid",
-    "HF15Gen2BlkSize",
+    "HF15Gen2Config",
     "HF15ESetUid",
     "HF15ESetBlock",
     "HF15ESetWriteProtect",
     "HF15ESetResvEasAfiDsfid",
     "HfMfEload",
     "HfMfEread",
+    "LfScan",
     "LfEm410xESetId",
 ]
 
