@@ -198,18 +198,6 @@ class DeviceRequiredUnit(BaseCLIUnit):
             print("Please connect to pn532 device first(use 'hw connect').")
             return False
 
-class MF1SetUidArgsUnit(DeviceRequiredUnit):
-    def args_parser(self) -> ArgumentParserNoExit:
-        parser = ArgumentParserNoExit()
-        parser.add_argument("-u", type=str, required=True, help="UID to set")
-        return parser
-
-    def get_param(self, args):
-        uid = args.uid
-        if len(uid) != 14 or len(uid) != 8:
-            raise ArgsParserError("UID must be 4 or 7 bytes long")
-        return uid
-
 
 class MF1AuthArgsUnit(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -218,7 +206,8 @@ class MF1AuthArgsUnit(DeviceRequiredUnit):
             "--blk",
             "--block",
             type=int,
-            required=True,
+            required=False,
+            default=0,
             metavar="<dec>",
             help="The block where the key of the card is known",
         )
@@ -233,7 +222,8 @@ class MF1AuthArgsUnit(DeviceRequiredUnit):
             "-k",
             "--key",
             type=str,
-            required=True,
+            required=False,
+            default="FFFFFFFFFFFF",
             metavar="<hex>",
             help="Mifare Sector key (12 HEX symbols)",
         )
@@ -255,7 +245,7 @@ class MF1WriteBlockArgsUnit(MF1AuthArgsUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = super().args_parser()
         parser.add_argument(
-            "-d", "--data", type=str, required=True, help="32 HEX symbols to write"
+            "-d", "--data", type=str, required=False, help="32 HEX symbols to write"
         )
         return parser
 
@@ -343,13 +333,17 @@ class HWRaw(DeviceRequiredUnit):
             "-d",
             "--data",
             type=str,
-            required=True,
+            required=False,
             help="Hex data to send",
             default="00",
         )
         return parser
 
     def on_exec(self, args: argparse.Namespace):
+        if args.data is None:
+            print("usage: hw raw [-h] [-d DATA]")
+            print("hw raw: error: the following arguments are required: -d")
+            return
         data = args.data
         if not re.match(r"^[0-9a-fA-F]+$", data):
             print("Data must be a HEX string")
@@ -415,7 +409,7 @@ class HF14ARaw(DeviceRequiredUnit):
             action="store_true",
             default=False,
         )
-        parser.add_argument("-d", type=str, metavar="<hex>", required=True, help="Hex data to be sent")
+        parser.add_argument("-d", type=str, metavar="<hex>", required=False, help="Hex data to be sent")
         parser.add_argument(
             "-b",
             type=int,
@@ -465,6 +459,10 @@ examples/notes:
         return parser
 
     def on_exec(self, args: argparse.Namespace):
+        if args.d is None:
+            print("usage: hf 14a raw [-h] -d <hex> [-c] [-sc] [-r]")
+            print("hf 14a raw: error: the following arguments are required: -d")
+            return
         options = {
             "activate_rf_field": self.bool_to_bit(args.activate_rf),
             "wait_response": self.bool_to_bit(not args.no_response),
@@ -521,7 +519,7 @@ class HF15Scan(DeviceRequiredUnit):
 
     def on_exec(self, args: argparse.Namespace):
         self.scan()
-        
+
 @hf_15.command("info")
 class HF15Info(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -553,7 +551,8 @@ class HF15Rdbl(DeviceRequiredUnit):
             "-b",
             "--block",
             type=int,
-            required=True,
+            required=False,
+            default=0,
             metavar="<dec>",
             help="Block to read",
         )
@@ -580,7 +579,8 @@ class HF15Wrbl(DeviceRequiredUnit):
             "-b",
             "--block",
             type=int,
-            required=True,
+            required=False,
+            default=0,
             metavar="<dec>",
             help="Block to write",
         )
@@ -588,7 +588,8 @@ class HF15Wrbl(DeviceRequiredUnit):
             "-d",
             "--data",
             type=str,
-            required=True,
+            required=False,
+            default="00000000",
             metavar="<hex>",
             help="Data to write (4 bytes)",
         )
@@ -614,7 +615,7 @@ class HF15Raw(DeviceRequiredUnit):
         parser.formatter_class = argparse.RawDescriptionHelpFormatter
         parser.description = "Send iso15693 raw command"
         parser.add_argument(
-            "-d", type=str, metavar="<hex>", required=True, help="Hex data to be sent"
+            "-d", type=str, metavar="<hex>", required=False, help="Hex data to be sent"
         )
         # add crc
         parser.add_argument(
@@ -642,6 +643,10 @@ class HF15Raw(DeviceRequiredUnit):
         return parser
     
     def on_exec(self, args: argparse.Namespace):
+        if args.d is None:
+            print("usage: hf 15 raw [-h] -d <hex> [-c] [-sc] [-r]")
+            print("hf 15 raw: error: the following arguments are required: -d")
+            return
         data: str = args.d
         if data is not None:
             data = data.replace(" ", "")
@@ -684,12 +689,16 @@ class HF15Gen2Uid(DeviceRequiredUnit):
         parser.add_argument(
             "-u",
             type=str,
-            required=True,
+            required=False,
             help="UID to set (8 bytes, start with E0)",
         )
         return parser
 
     def on_exec(self, args: argparse.Namespace):
+        if args.u is None:
+            print("usage: hf 15 gen2uid [-h] -u <hex>")
+            print("hf 15 gen2uid: error: the following arguments are required: -u")
+            return
         resp_scan = self.cmd.hf_15_scan()
         if resp_scan is None:
             print("ISO15693 Tag no found")
@@ -780,7 +789,6 @@ class HF15Gen2Config(DeviceRequiredUnit):
 
 @hf_15.command("esetuid")
 class HF15ESetUid(DeviceRequiredUnit):
-    # add parameter -u <hex> to set uid(8 bytes, start with E0)
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Set UID of ISO15693 Emulation"
@@ -788,15 +796,19 @@ class HF15ESetUid(DeviceRequiredUnit):
             "-u",
             type=str,
             metavar="<hex>",
-            required=True,
+            required=False,
             help="UID to set (8 bytes)",
         )
         parser.add_argument(
             "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
         )
         return parser
-    
+
     def on_exec(self, args: argparse.Namespace):
+        if args.u is None:
+            print("usage: hf 15 esetuid [-h] -u <hex> [-s SLOT]")
+            print("hf 15 esetuid: error: the following arguments are required: -u")
+            return
         uid = args.u
         if not re.match(r"^[a-fA-F0-9]{16}$", uid):
             print("UID must be 8 bytes hex")
@@ -1474,6 +1486,10 @@ class HfMfRdbl(MF1AuthArgsUnit):
 @hf_mf.command("wrbl")
 class HfMfWrbl(MF1WriteBlockArgsUnit):
     def on_exec(self, args: argparse.Namespace):
+        if args.data is None:
+            print("usage: hf mf wrbl [-h] -b <dec> -k <hex> -d <hex>")
+            print("hf mf wrbl: error: the following arguments are required: -d")
+            return
         key_type = MfcKeyType.B if args.b else MfcKeyType.A
         key: str = args.key
         data = args.data
@@ -1565,7 +1581,7 @@ class LfEm410xESetId(DeviceRequiredUnit):
             "-i",
             type=str,
             metavar="<hex>",
-            required=True,
+            required=False,
             help="ID to set (10 bytes)",
         )
         parser.add_argument(
@@ -1574,6 +1590,10 @@ class LfEm410xESetId(DeviceRequiredUnit):
         return parser
 
     def on_exec(self, args: argparse.Namespace):
+        if args.i is None:
+            print("usage: lf em410x esetid [-h] -i <hex> [-s SLOT]")
+            print("lf em410x esetid: error: the following arguments are required: -i")
+            return
         id = args.i
         if not re.match(r"^[a-fA-F0-9]{20}$", id):
             print("ID must be 10 bytes hex")
