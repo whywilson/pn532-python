@@ -50,6 +50,9 @@ class Pn532CMD:
         resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b"\x01\x00")
         # print("response status = ", resp.status)
         if resp.status == Status.SUCCESS:
+            if len(resp.data) < 2:
+                resp.parsed = None
+                return resp
             # tagType[1]tagNum[1]atqa[2]sak[1]uidlen[1]uid[uidlen]
             offset = 0
             data = []
@@ -647,6 +650,9 @@ class Pn532CMD:
                 f"Send: {bytes(data).hex().upper()} Status: {hex(resp.status)}, Data: {resp.parsed.hex().upper()}"
             )
         return resp
+    
+    def hf_15_set_gen1_uid(self, uid: bytes, block_size: int):
+        return self.hf_15_write_block(block_size, uid[4:][::-1]) and self.hf_15_write_block(block_size + 1, uid[:4][::-1])
 
     def hf_15_set_gen2_uid(self, uid: bytes):
         # 02e0094044556677 44556677 is the last 4 bytes of uid

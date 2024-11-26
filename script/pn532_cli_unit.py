@@ -680,6 +680,40 @@ class HF15Raw(DeviceRequiredUnit):
                     [hex(byte).replace("0x", "").rjust(2, "0").upper() for byte in resp.data]
                 )
             )
+            
+@hf_15.command("gen1uid")
+class HF15Gen1Uid(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set UID of Gen1 Magic ISO15693 tag"
+        parser.add_argument(
+            "-u",
+            type=str,
+            required=False,
+            help="UID to set (8 bytes, start with E0)",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if args.u is None:
+            print("usage: hf 15 gen1uid [-h] -u <hex>")
+            print("hf 15 gen1uid: error: the following arguments are required: -u")
+            return
+        uid = args.u
+        if not re.match(r"^[a-fA-F0-9]{16}$", uid):
+            print("UID must be 8 bytes hex")
+            return
+        if uid[0:2].lower() != "e0":
+            print("UID must start with E0")
+            return
+        resp_scan = self.cmd.hf_15_scan()
+        if resp_scan is None:
+            print("ISO15693 Tag no found")
+            return
+        resp_info = self.cmd.hf_15_info()
+        block_size = resp_info["block_size"]    
+        resp = self.cmd.hf_15_set_gen1_uid(bytes.fromhex(uid), block_size)
+        print(f"Set UID to {uid} {CY}{'Success' if resp else 'Fail'}{C0}")
 
 @hf_15.command("gen2uid")
 class HF15Gen2Uid(DeviceRequiredUnit):
