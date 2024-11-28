@@ -764,7 +764,7 @@ class HF15Gen2Config(DeviceRequiredUnit):
         parser.add_argument(
             "-a",
             "--afi",
-            default=0x00,
+            default="00",
             type=str,
             required=False,
             metavar="<hex>",
@@ -773,7 +773,7 @@ class HF15Gen2Config(DeviceRequiredUnit):
         parser.add_argument(
             "-d",
             "--dsfid",
-            default=0x00,
+            default="00",
             type=str,
             required=False,
             metavar="<hex>",
@@ -782,7 +782,7 @@ class HF15Gen2Config(DeviceRequiredUnit):
         parser.add_argument(
             "-i",
             "--ic",
-            default=0x00,
+            default="00",
             type=str,
             required=False,
             metavar="<hex>",
