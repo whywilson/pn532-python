@@ -1634,6 +1634,75 @@ class HfMfCview(DeviceRequiredUnit):
                     f.write(bytes.fromhex(block))
                 print(f"Dump saved to {fileName}.bin")
 
+@hf_mf.command("dump")
+class HfMfDump(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Dump Mifare Classic card"
+        # add key file
+        parser.add_argument(
+            "-k",
+            metavar="<file>",
+            type=argparse.FileType("r"),
+            required=False,
+            help="Mifare Key file",
+        )
+        parser.add_argument(
+            "--file", action="store_true", help="Save to json file"
+        )
+        parser.add_argument(
+            "--bin", action="store_true", help="Save to bin file"
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        valid_keys = ["FFFFFFFFFFFF"]
+        if args.k:
+            with open(args.k.name, "r") as key_file:
+                for line in key_file:
+                    mifare_key = line.strip()
+                    if re.match(r"^[a-fA-F0-9]{12}$", mifare_key):
+                        valid_keys.append(mifare_key)
+
+        print(f"Total keys: {CR}{len(valid_keys)}{C0}")
+        resp = self.cmd.hf14a_scan()
+        if resp == None:
+            print("No tag found")
+            return resp
+        uid = resp[0]["uid"]
+        print(f"UID: {uid.hex().upper()}")
+        print(f"ATQA: {resp[0]['atqa'].hex().upper()}")
+        print(f"SAK: {resp[0]['sak'].hex().upper()}")
+        if resp[0]["sak"] in block_size_dict:
+            block_size = block_size_dict[resp[0]["sak"]]
+            print(f"Block size: {block_size} bytes")
+            dump_map = {}
+            for block in range(block_size):
+                for key in valid_keys:
+                    resp = self.cmd.mf1_read_block(uid, block, bytes.fromhex(key))
+                    if resp:
+                        dump_map[block] = resp.hex().upper()
+                        print(f"{block}: {dump_map[block]}")
+                        valid_keys.insert(0, valid_keys.pop(valid_keys.index(key)))
+                        break
+                    else:
+                        print(f"\rAuth failed on block {block} with key {key} ({valid_keys.index(key) + 1}/{len(valid_keys)})", end="")
+                        # Display progress bar
+                        progress = (block + 1) / block_size * 100
+                        bar_length = 40
+                        block_progress = int(bar_length * progress / 100)
+                        bar = f"[{'#' * block_progress}{'.' * (bar_length - block_progress)}] {progress:.2f}%"
+                        print(f"\r{bar}", end="")
+            if args.file:
+                with open(f"mf_dump_{uid.hex().upper()}.json", "w") as json_file:
+                    json.dump({"blocks": dump_map}, json_file)
+            if args.bin:
+                with open(f"mf_dump_{uid.hex().upper()}.bin", "wb") as bin_file:
+                    for block_index, block_data in dump_map.items():
+                        bin_file.write(bytes.fromhex(block_data))
+        else:
+            print(f"{CR}Not MiFare Classic{C0}")
+
 @hf_mf.command("wipe")
 class HfMfWipe(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
