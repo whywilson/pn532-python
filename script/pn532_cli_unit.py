@@ -1654,9 +1654,14 @@ class HfMfDump(DeviceRequiredUnit):
             "--bin", action="store_true", help="Save to bin file"
         )
         return parser
+    
+    def sak_info(self, data_tag):
+        int_sak = data_tag["sak"][0]
+        if int_sak in type_id_SAK_dict:
+            print(f"Type: {type_id_SAK_dict[int_sak]}")
 
     def on_exec(self, args: argparse.Namespace):
-        valid_keys = ["FFFFFFFFFFFF"]
+        valid_keys = []
         if args.k:
             with open(args.k.name, "r") as key_file:
                 for line in key_file:
@@ -1673,26 +1678,42 @@ class HfMfDump(DeviceRequiredUnit):
         print(f"UID: {uid.hex().upper()}")
         print(f"ATQA: {resp[0]['atqa'].hex().upper()}")
         print(f"SAK: {resp[0]['sak'].hex().upper()}")
-        if resp[0]["sak"] in block_size_dict:
-            block_size = block_size_dict[resp[0]["sak"]]
-            print(f"Block size: {block_size} bytes")
+        self.sak_info(resp[0])
+        # print key of block_size_dict
+        
+        if int.from_bytes(resp[0]['sak'], 'big') in block_size_dict:
+            block_size = block_size_dict[int.from_bytes(resp[0]['sak'], 'big')]
+            print(f"Block Size: {block_size}")
+            time.sleep(0.5)
             dump_map = {}
             for block in range(block_size):
                 for key in valid_keys:
-                    resp = self.cmd.mf1_read_block(uid, block, bytes.fromhex(key))
-                    if resp:
-                        dump_map[block] = resp.hex().upper()
-                        print(f"{block}: {dump_map[block]}")
-                        valid_keys.insert(0, valid_keys.pop(valid_keys.index(key)))
+                    resp = self.cmd.mf1_read_block(block, bytes.fromhex(key))
+                    if resp and resp.parsed:
+                        # print line with space * 60
+                        print(f"\r{' '*60}", end="\r")
+                        dump_map[block] = resp.parsed.hex().upper()
+                        if(len(dump_map[block])):
+                            block_data = dump_map[block]
+                            if block == 0:
+                                if len(uid) == 7:
+                                    print(
+                                        f"{block:02d}: {CY}{block_data[0:14].upper()}{C0}{block_data[14:].upper()}{C0}"
+                                    )
+                                else:
+                                    print(
+                                        f"{block:02d}: {CY}{block_data[0:8].upper()}{CR}{block_data[8:10].upper()}{CG}{block_data[10:12].upper()}{CY}{block_data[12:16].upper()}{C0}{block_data[16:].upper()}{C0}"
+                                    )
+                            elif is_trailer_block(block):
+                                print(
+                                    f"{block:02d}: {CG}{block_data[0:12].upper()}{CR}{block_data[12:20].upper()}{CG}{block_data[20:].upper()}{C0}"
+                                )
+                            else:
+                                print(f"{block:02d}: {block_data.upper()}")
+                            valid_keys.insert(0, valid_keys.pop(valid_keys.index(key)))
                         break
                     else:
-                        print(f"\rAuth failed on block {block} with key {key} ({valid_keys.index(key) + 1}/{len(valid_keys)})", end="")
-                        # Display progress bar
-                        progress = (block + 1) / block_size * 100
-                        bar_length = 40
-                        block_progress = int(bar_length * progress / 100)
-                        bar = f"[{'#' * block_progress}{'.' * (bar_length - block_progress)}] {progress:.2f}%"
-                        print(f"\r{bar}", end="")
+                        print(f"\rAuth block {block} with key {key} ({valid_keys.index(key) + 1}/{len(valid_keys)})", end="\r")
             if args.file:
                 with open(f"mf_dump_{uid.hex().upper()}.json", "w") as json_file:
                     json.dump({"blocks": dump_map}, json_file)

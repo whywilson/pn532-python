@@ -125,18 +125,16 @@ class Pn532CMD:
                 if len(resp) > 16:
                     resp = resp[:16]
                 block_data[f"{block}"] = resp.hex()
-                # print block index with padding 2 spaces
-                # print(f"block {block:02d}: {resp.hex().upper()}")
                 if block == 0:
                     print(
-                        f"block {block:02d}: {CY}{resp.hex()[0:8].upper()}{CR}{resp.hex()[8:10].upper()}{CG}{resp.hex()[10:14].upper()}{C0}{resp.hex()[14:].upper()}{C0}"
+                        f"{block:02d}: {CY}{resp.hex()[0:8].upper()}{CR}{resp.hex()[8:10].upper()}{CG}{resp.hex()[10:12].upper()}{CY}{resp.hex()[12:16].upper()}{C0}{resp.hex()[16:].upper()}{C0}"
                     )
                 elif block % 4 == 3:
                     print(
-                        f"block {block:02d}: {CG}{resp.hex()[0:12].upper()}{CR}{resp.hex()[12:20].upper()}{CG}{resp.hex()[20:].upper()}{C0}"
+                        f"{block:02d}: {CG}{resp.hex()[0:12].upper()}{CR}{resp.hex()[12:20].upper()}{CG}{resp.hex()[20:].upper()}{C0}"
                     )
                 else:
-                    print(f"block {block:02d}: {resp.hex().upper()}")
+                    print(f"{block:02d}: {resp.hex().upper()}")
                 block += 1
             tag_info["blocks"] = block_data
         except Exception as e:
@@ -402,26 +400,34 @@ class Pn532CMD:
         data = struct.pack(format_str, 0x01, type_value, block, key, uid)
         resp = self.device.send_cmd_sync(Command.InDataExchange, data)
         return resp.data[0] == Status.HF_TAG_OK
-
+    
+    mf1_authenticated_sector = -1
+    mf1_authenticated_useKeyA = True
+    
     def mf1_read_block(self, block, key):
-        resp = self.hf14a_scan()
-        if resp == None:
-            print("No tag found")
-            return resp
-        uidID1 = bytes(resp[0]["uid"])
-        useKeyA = True
-        auth_result = self.mf1_auth_one_key_block(block, MfcKeyType.A, key, uidID1)
-        if not auth_result:
-            useKeyA = False
-            auth_result = self.mf1_auth_one_key_block(block, MfcKeyType.B, key, uidID1)
-        if not auth_result:
-            return Response(Command.InDataExchange, Status.MF_ERR_AUTH)
+        current_sector = block // 4 if block < 128 else ((block - 128) // 16 + 32)
+        if self.mf1_authenticated_sector != current_sector:
+            resp = self.hf14a_scan()
+            if resp == None:
+                print("No tag found")
+                return resp
+            uidID1 = bytes(resp[0]["uid"])
+            auth_result = self.mf1_auth_one_key_block(block, MfcKeyType.A, key, uidID1)
+            if not auth_result:
+                self.mf1_authenticated_useKeyA = False
+                resp = self.hf14a_scan()
+                auth_result = self.mf1_auth_one_key_block(block, MfcKeyType.B, key, uidID1)
+            if not auth_result:
+                self.mf1_authenticated_useKeyA = True
+                return Response(Command.InDataExchange, Status.MF_ERR_AUTH)
+            self.mf1_authenticated_sector = current_sector
+        
         data = struct.pack("!BBB", 0x01, MifareCommand.MfReadBlock, block)
         resp = self.device.send_cmd_sync(Command.InDataExchange, data)
+        resp.parsed = resp.data
         if len(resp.data) >= 16:
-            resp.parsed = resp.data
             if self.is_mf_trailler_block(block):
-                if useKeyA:
+                if self.mf1_authenticated_useKeyA:
                     resp.parsed = key + resp.parsed[6:]
                 else:
                     resp.parsed = resp.parsed[0:10] + key
