@@ -56,6 +56,7 @@ PN532Capabilities = [
     "HfMfRdbl",
     "HfMfWrbl",
     "HfMfCview",
+    "HfMfWipe",
     "NtagEmulate",
 ]
 PN532KillerCapabilities = [

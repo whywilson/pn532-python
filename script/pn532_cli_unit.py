@@ -13,6 +13,8 @@ import threading
 import struct
 from unit.calc import str_to_bytes
 from unit.calc import is_hex
+from unit.preset import FactoryPreset
+from unit.mifare_classic import get_block_size_by_sector, get_block_index_by_sector, is_trailer_block
 from multiprocessing import Pool, cpu_count
 from typing import Union
 from pathlib import Path
@@ -41,6 +43,13 @@ type_id_SAK_dict = {
     "MIFARE Plus S 2/4K | MIFARE Plus X 2/4K | MIFARE Plus SE 1K",
     0x28: "SmartMX with MIFARE Classic 1K",
     0x38: "SmartMX with MIFARE Classic 4K",
+}
+
+block_size_dict = {
+    0x08: 64,
+    0x09: 20,
+    0x18: 256,
+    0x19: 128,
 }
 
 default_cwd = Path.cwd() / Path(__file__).with_name("bin")
@@ -74,6 +83,7 @@ lf_em = lf.subgroup("em", "EM commands")
 lf_em_410x = lf_em.subgroup("410x", "EM410x commands")
 
 ntag = root.subgroup("ntag", "NTAG commands")
+
 
 class BaseCLIUnit:
     def __init__(self):
@@ -191,7 +201,9 @@ class DeviceRequiredUnit(BaseCLIUnit):
         ret = self.device_com.isOpen()
         if ret:
             if not self.device_com.is_support_cmd(self.__class__.__name__):
-                print(f"{CR}{self.__class__.__name__} not support by {self.device_com.get_device_name()}{C0}")
+                print(
+                    f"{CR}{self.__class__.__name__} not support by {self.device_com.get_device_name()}{C0}"
+                )
                 return False
             return True
         else:
@@ -215,9 +227,7 @@ class MF1AuthArgsUnit(DeviceRequiredUnit):
         type_group.add_argument(
             "-a", action="store_true", help="Known key is A key (default)"
         )
-        type_group.add_argument(
-            "-b", action="store_true", help="Known key is B key"
-        )
+        type_group.add_argument("-b", action="store_true", help="Known key is B key")
         parser.add_argument(
             "-k",
             "--key",
@@ -241,6 +251,7 @@ class MF1AuthArgsUnit(DeviceRequiredUnit):
 
         return Param()
 
+
 class MF1WriteBlockArgsUnit(MF1AuthArgsUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = super().args_parser()
@@ -253,6 +264,7 @@ class MF1WriteBlockArgsUnit(MF1AuthArgsUnit):
         param = super().get_param(args)
         param.data = bytearray.fromhex(args.data)
         return param
+
 
 @root.command("clear")
 class RootClear(BaseCLIUnit):
@@ -363,7 +375,7 @@ class HF14AScan(DeviceRequiredUnit):
         return parser
 
     def sak_info(self, data_tag):
-        int_sak = data_tag["sak"][0]
+        int_sak = data_tag["sak"]
         if int_sak in type_id_SAK_dict:
             print(f"- Guessed type(s) from SAK: {type_id_SAK_dict[int_sak]}")
 
@@ -377,6 +389,7 @@ class HF14AScan(DeviceRequiredUnit):
                     f"(0x{int.from_bytes(data_tag['atqa'], byteorder='little'):04x})"
                 )
                 print(f"- SAK: {data_tag['sak'].hex().upper()}")
+                self.sak_info(data_tag)
                 if "ats" in data_tag and len(data_tag["ats"]) > 0:
                     print(f"- ATS: {data_tag['ats'].hex().upper()}")
         else:
@@ -409,7 +422,9 @@ class HF14ARaw(DeviceRequiredUnit):
             action="store_true",
             default=False,
         )
-        parser.add_argument("-d", type=str, metavar="<hex>", required=False, help="Hex data to be sent")
+        parser.add_argument(
+            "-d", type=str, metavar="<hex>", required=False, help="Hex data to be sent"
+        )
         parser.add_argument(
             "-b",
             type=int,
@@ -502,6 +517,7 @@ examples/notes:
         else:
             print(f" [*] {CY}No response{C0}")
 
+
 @hf_15.command("scan")
 class HF15Scan(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -519,6 +535,7 @@ class HF15Scan(DeviceRequiredUnit):
 
     def on_exec(self, args: argparse.Namespace):
         self.scan()
+
 
 @hf_15.command("info")
 class HF15Info(DeviceRequiredUnit):
@@ -541,6 +558,7 @@ class HF15Info(DeviceRequiredUnit):
             print(f"Block size: {resp['block_size']}")
         else:
             print("Get ISO15693 tag information failed")
+
 
 @hf_15.command("rdbl")
 class HF15Rdbl(DeviceRequiredUnit):
@@ -569,6 +587,7 @@ class HF15Rdbl(DeviceRequiredUnit):
             print(f"Block {block}: {resp.hex().upper()}")
         else:
             print(f"Read block {block} failed")
+
 
 @hf_15.command("wrbl")
 class HF15Wrbl(DeviceRequiredUnit):
@@ -608,6 +627,7 @@ class HF15Wrbl(DeviceRequiredUnit):
         resp = self.cmd.hf_15_write_block(block, bytes.fromhex(data))
         print(f"Write block {block} {CY}{'Success' if resp else 'Fail'}{C0}")
 
+
 @hf_15.command("raw")
 class HF15Raw(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -641,7 +661,7 @@ class HF15Raw(DeviceRequiredUnit):
             default=False,
         )
         return parser
-    
+
     def on_exec(self, args: argparse.Namespace):
         if args.d is None:
             print("usage: hf 15 raw [-h] -d <hex> [-c] [-sc] [-r]")
@@ -677,10 +697,14 @@ class HF15Raw(DeviceRequiredUnit):
             print(
                 " - "
                 + " ".join(
-                    [hex(byte).replace("0x", "").rjust(2, "0").upper() for byte in resp.data]
+                    [
+                        hex(byte).replace("0x", "").rjust(2, "0").upper()
+                        for byte in resp.data
+                    ]
                 )
             )
-            
+
+
 @hf_15.command("gen1uid")
 class HF15Gen1Uid(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -711,9 +735,10 @@ class HF15Gen1Uid(DeviceRequiredUnit):
             print("ISO15693 Tag no found")
             return
         resp_info = self.cmd.hf_15_info()
-        block_size = resp_info["block_size"]    
+        block_size = resp_info["block_size"]
         resp = self.cmd.hf_15_set_gen1_uid(bytes.fromhex(uid), block_size)
         print(f"Set UID to {uid} {CY}{'Success' if resp else 'Fail'}{C0}")
+
 
 @hf_15.command("gen2uid")
 class HF15Gen2Uid(DeviceRequiredUnit):
@@ -747,6 +772,7 @@ class HF15Gen2Uid(DeviceRequiredUnit):
         resp = self.cmd.hf_15_set_gen2_uid(bytes.fromhex(uid))
         print(f"Set UID to {uid} {CY}{'Success' if resp else 'Fail'}{C0}")
 
+
 @hf_15.command("gen2config")
 class HF15Gen2Config(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -778,7 +804,7 @@ class HF15Gen2Config(DeviceRequiredUnit):
             required=False,
             metavar="<hex>",
             help="DSFID on hex value",
-        )        
+        )
         parser.add_argument(
             "-i",
             "--ic",
@@ -817,9 +843,10 @@ class HF15Gen2Config(DeviceRequiredUnit):
                 return
 
         args.ic = int(args.ic, 16) if args.ic is not None else 0
-        
+
         resp = self.cmd.hf_15_set_gen2_config(args.size, args.afi, args.dsfid, args.ic)
         print(f"Config Gen2 Magic ISO15693 tag {CY}{'Success' if resp else 'Fail'}{C0}")
+
 
 @hf_15.command("esetuid")
 class HF15ESetUid(DeviceRequiredUnit):
@@ -852,7 +879,10 @@ class HF15ESetUid(DeviceRequiredUnit):
             print("UID must start with E0")
             return
         resp = self.cmd.hf_15_eset_uid(args.slot - 1, bytes.fromhex(uid))
-        print(f"Set Slot {args.slot} UID to {uid} {CY}{'Success' if resp else 'Fail'}{C0}")
+        print(
+            f"Set Slot {args.slot} UID to {uid} {CY}{'Success' if resp else 'Fail'}{C0}"
+        )
+
 
 @hf_15.command("esetblock")
 class HF15ESetBlock(DeviceRequiredUnit):
@@ -879,14 +909,17 @@ class HF15ESetBlock(DeviceRequiredUnit):
             help="Data block (4 bytes)",
         )
         return parser
-    
+
     def on_exec(self, args: argparse.Namespace):
         block = args.data
         if not re.match(r"^[a-fA-F0-9]{8}$", block):
             print("Block must be 4 bytes hex")
             return
         resp = self.cmd.hf_15_eset_block(args.slot - 1, args.b, bytes.fromhex(block))
-        print(f"Set Slot {args.slot} block {args.b} to {block} {CY}{'Success' if resp else 'Fail'}{C0}")
+        print(
+            f"Set Slot {args.slot} block {args.b} to {block} {CY}{'Success' if resp else 'Fail'}{C0}"
+        )
+
 
 @hf_15.command("eSetwriteprotect")
 class HF15ESetWriteProtect(DeviceRequiredUnit):
@@ -905,10 +938,15 @@ class HF15ESetWriteProtect(DeviceRequiredUnit):
             default=False,
         )
         return parser
-    
+
     def on_exec(self, args: argparse.Namespace):
-        resp = self.cmd.hf_15_eset_write_protect(args.slot - 1, b'\x01' if args.write else b'\x00')
-        print(f"Set Slot {args.slot} write protect to {args.write} {CY}{'Success' if resp else 'Fail'}{C0}")
+        resp = self.cmd.hf_15_eset_write_protect(
+            args.slot - 1, b"\x01" if args.write else b"\x00"
+        )
+        print(
+            f"Set Slot {args.slot} write protect to {args.write} {CY}{'Success' if resp else 'Fail'}{C0}"
+        )
+
 
 @hf_15.command("eSetResvEasAfiDsfid")
 class HF15ESetResvEasAfiDsfid(DeviceRequiredUnit):
@@ -947,7 +985,7 @@ class HF15ESetResvEasAfiDsfid(DeviceRequiredUnit):
             help="DSFID",
         )
         return parser
-    
+
     def on_exec(self, args: argparse.Namespace):
         # pack resv, eas, afi, dsfid
         data = b""
@@ -980,7 +1018,10 @@ class HF15ESetResvEasAfiDsfid(DeviceRequiredUnit):
         else:
             data += b"\x00"
         resp = self.cmd.hf_15_eset_resv_eas_afi_dsfid(args.slot - 1, data)
-        print(f"Set Slot {args.slot} Resv, EAS, AFI, DSFID {CY}{'Success' if resp else 'Fail'}{C0}")
+        print(
+            f"Set Slot {args.slot} Resv, EAS, AFI, DSFID {CY}{'Success' if resp else 'Fail'}{C0}"
+        )
+
 
 @root.command("exit")
 class RootExit(BaseCLIUnit):
@@ -994,6 +1035,7 @@ class RootExit(BaseCLIUnit):
         self.device_com.close()
         sys.exit(996)
 
+
 @hw.command("wakeup")
 class HWWakeUp(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -1004,6 +1046,7 @@ class HWWakeUp(DeviceRequiredUnit):
     def on_exec(self, args: argparse.Namespace):
         self.device_com.set_normal_mode()
         print("Device wake up")
+
 
 @hw.command("connect")
 class HWConnect(BaseCLIUnit):
@@ -1083,6 +1126,7 @@ class HWVersion(DeviceRequiredUnit):
         else:
             print("Failed to get firmware version")
 
+
 @hf_sniff.command("setuid")
 class HfSniffSetUid(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -1153,6 +1197,7 @@ class HfSniffSetUid(DeviceRequiredUnit):
                 return
         return str_to_bytes(block0)
 
+
 @hf_mf.command("eload")
 class HfMfEload(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -1175,7 +1220,7 @@ class HfMfEload(DeviceRequiredUnit):
             help="MF 1k json dump file",
         )
         return parser
-    
+
     def on_exec(self, args: argparse.Namespace):
         if not args.bin and not args.json:
             print("Please choose either bin file or json file")
@@ -1196,7 +1241,7 @@ class HfMfEload(DeviceRequiredUnit):
                 file_dump = json.load(json_file)
                 if "blocks" in file_dump:
                     dump_map = file_dump["blocks"]
-                    
+
         # if dump_map key count is not 64, return
         if len(dump_map) != 64:
             print("Invalid dump file")
@@ -1207,6 +1252,7 @@ class HfMfEload(DeviceRequiredUnit):
                 return
         self.cmd.hf_mf_load(dump_map, args.slot)
 
+
 @hf_mf.command("eread")
 class HfMfEread(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -1215,14 +1261,10 @@ class HfMfEread(DeviceRequiredUnit):
         parser.add_argument(
             "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
         )
-        parser.add_argument(
-            "--file", action="store_true", help="Save to json file"
-        )
-        parser.add_argument(
-            "--bin", action="store_true", help="Save to bin file"
-        )
+        parser.add_argument("--file", action="store_true", help="Save to json file")
+        parser.add_argument("--bin", action="store_true", help="Save to bin file")
         return parser
-    
+
     def on_exec(self, args: argparse.Namespace):
         self.device_com.set_work_mode(2, 0x01, args.slot - 1)
         dump_map = self.cmd.hf_mf_eread(args.slot)
@@ -1251,6 +1293,7 @@ class HfMfEread(DeviceRequiredUnit):
             with open(file_name, "wb") as bin_file:
                 for block_index, block_data in dump_map.items():
                     bin_file.write(bytes.fromhex(block_data))
+
 
 @hf_mf.command("setuid")
 class HfMfSetUid(DeviceRequiredUnit):
@@ -1370,14 +1413,6 @@ examples:
         tag_info["atqa"] = resp[0]["atqa"].hex()
         tag_info["sak"] = resp[0]["sak"].hex()
         tag_info["data"] = []
-        options = {
-            "activate_rf_field": 1,
-            "wait_response": 1,
-            "append_crc": 0,
-            "auto_select": 0,
-            "keep_rf_field": 1,
-            "check_response_crc": 0,
-        }
 
         if self.cmd.isGen1a():
             print("Found Gen1A:", f"{tag_info['uid'].upper()}")
@@ -1417,26 +1452,38 @@ examples:
         tag_info["sak"] = resp[0]["sak"].hex()
         tag_info["data"] = []
         print(f"Write block 0: {block0.hex().upper()}")
-        resp = self.cmd.mf1_write_one_block(resp[0]["uid"], 0, MfcKeyType.B if use_key_b else MfcKeyType.A, key, block0)
+        resp = self.cmd.mf1_write_one_block(
+            resp[0]["uid"], 0, MfcKeyType.B if use_key_b else MfcKeyType.A, key, block0
+        )
         if resp:
             print(f" - {CG}Write done.{C0}")
         else:
             print(f" - {CR}Write failed.{C0}")
-        
+
     def gen3_set_block0(self, uid: bytes, block0: bytes, lock: bool = False):
         selectTag = self.cmd.selectTag()
         if not selectTag:
             print(f"{CR}Select tag failed{C0}")
             return
         resp1 = self.cmd.setGen3Uid(uid)
-        print(f"Set UID to {uid.hex().upper()}: {CG}Success{C0}" if resp1 else f"Set UID to {uid.hex().upper()}: {CR}Failed{C0}")
+        print(
+            f"Set UID to {uid.hex().upper()}: {CG}Success{C0}"
+            if resp1
+            else f"Set UID to {uid.hex().upper()}: {CR}Failed{C0}"
+        )
         resp2 = self.cmd.setGen3Block0(block0)
-        print(f"Set block0 to {block0.hex().upper()}: {CG}Success{C0}" if resp2 else f"Set block0 to {block0.hex().upper()}: {CR}Failed{C0}")
+        print(
+            f"Set block0 to {block0.hex().upper()}: {CG}Success{C0}"
+            if resp2
+            else f"Set block0 to {block0.hex().upper()}: {CR}Failed{C0}"
+        )
         if lock:
             resp3 = self.cmd.lockGen3Uid()
-            print(f"Lock UID: {CG}Success{C0}" if resp3 else f"Lock UID: {CR}Failed{C0}")
+            print(
+                f"Lock UID: {CG}Success{C0}" if resp3 else f"Lock UID: {CR}Failed{C0}"
+            )
 
-    def gen4_set_block0(self, uid: bytes, block0: bytes, pwd = "00000000"):
+    def gen4_set_block0(self, uid: bytes, block0: bytes, pwd="00000000"):
         tag_info = {}
         resp = self.cmd.hf14a_scan()
         if resp == None:
@@ -1447,7 +1494,7 @@ examples:
         tag_info["atqa"] = resp[0]["atqa"].hex()
         tag_info["sak"] = resp[0]["sak"].hex()
         tag_info["data"] = []
-       
+
         if self.cmd.isGen4():
             print("Found Gen4:", f"{tag_info['uid'].upper()}")
             options = {
@@ -1478,7 +1525,7 @@ examples:
             resp = self.cmd.hf14a_raw(
                 options=options,
                 resp_timeout_ms=1000,
-                data=bytes.fromhex(f"CF{pwd}CD00{block0.hex()}")
+                data=bytes.fromhex(f"CF{pwd}CD00{block0.hex()}"),
             )
             print(f" - {CG}Write done.{C0}")
         else:
@@ -1499,6 +1546,7 @@ examples:
             self.gen3_set_block0(uid, block0, args.lock)
         elif gen == 4:
             self.gen4_set_block0(uid, block0, pwd=args.p)
+
 
 @hf_mf.command("rdbl")
 class HfMfRdbl(MF1AuthArgsUnit):
@@ -1541,18 +1589,15 @@ class HfMfWrbl(MF1WriteBlockArgsUnit):
         )
         print(f" - {CG}Write done.{C0}" if resp else f" - {CR}Write fail.{C0}")
 
+
 @hf_mf.command("cview")
 class HfMfCview(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "View Gen1a dump"
         # add parser arguments f for save to file, bool type
-        parser.add_argument(
-            "--file", action="store_true", help="Save to json file"
-        )
-        parser.add_argument(
-            "--bin", action="store_true", help="Save to bin file"
-        )
+        parser.add_argument("--file", action="store_true", help="Save to json file")
+        parser.add_argument("--bin", action="store_true", help="Save to bin file")
         return parser
 
     def on_exec(self, args: argparse.Namespace):
@@ -1589,6 +1634,122 @@ class HfMfCview(DeviceRequiredUnit):
                     f.write(bytes.fromhex(block))
                 print(f"Dump saved to {fileName}.bin")
 
+@hf_mf.command("wipe")
+class HfMfWipe(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Wipe Mifare Classic card"
+        parser.add_argument(
+            "-k",
+            metavar="<file>",
+            type=argparse.FileType("r"),
+            required=True,
+            help="Mifare Key file",
+        )
+        return parser
+
+    def sak_info(self, data_tag):
+        int_sak = data_tag["sak"][0]
+        if int_sak in type_id_SAK_dict:
+            print(f"- Guessed type(s) from SAK: {type_id_SAK_dict[int_sak]}")
+
+    def on_exec(self, args: argparse.Namespace):
+        valid_keys = []
+        with open(args.k.name, "r") as key_file:
+            for line in key_file:
+                mifare_key = line.strip()
+                if re.match(r"^[a-fA-F0-9]{12}$", mifare_key):
+                    valid_keys.append(mifare_key)
+
+        if len(valid_keys) == 0:
+            print("No valid keys found in the file.")
+            return
+
+        print(f"Total keys: {CR}{len(valid_keys)}{C0}")
+        print(f"{CR}Warning: Wiping the card will erase all data on the card.{C0}")
+        print(f"{CR}Warning: This operation is irreversible.{C0}")
+        resp = self.cmd.hf14a_scan()
+        if resp == None:
+            print("No tag found")
+            return resp
+
+        print(f"UID:  {resp[0]['uid'].hex().upper()}")
+        print(f"ATQA: {resp[0]['atqa'].hex().upper()}")
+        print(f"SAK:  {resp[0]['sak'].hex().upper()}")
+
+        self.sak_info(resp[0])
+
+        if resp[0]["sak"] in block_size_dict:
+            block_size = block_size_dict[resp[0]["sak"]]
+            print(f"Block size: {block_size} bytes")
+            if self.cmd.isGen1a():
+                print(f"{CR}Gen1A detected.{C0}")
+                # no key required for Gen1A
+                for block in range(64):
+                    blockData = ""
+                    if(block == 0):
+                        if len(resp[0]["uid"]) == 7:
+                            blockData = FactoryPreset.mf7bBlock0
+                        else:
+                            blockData = FactoryPreset.mf4bBlock0
+                    elif(is_trailer_block(block)):
+                        blockData = FactoryPreset.mfTrailerBlock
+                    else:
+                        blockData = "00" * 16
+                    options = {
+                        "activate_rf_field": 0,
+                        "wait_response": 1,
+                        "append_crc": 1,
+                        "auto_select": 0,
+                        "keep_rf_field": 1,
+                        "check_response_crc": 0,
+                    }
+                    resp = self.cmd.hf14a_raw(
+                        options=options,
+                        resp_timeout_ms=1000,
+                        data=[MifareCommand.MfWriteBlock, block],
+                    )
+                    options["keep_rf_field"] = 0
+                    resp = self.cmd.hf14a_raw(
+                        options=options,
+                        resp_timeout_ms=1000,
+                        data=blockData,
+                    )
+                    if resp.length > 0 and resp[0] == 0x00:
+                        print(f"Write {blockData} to block {block}: {CG}Success{C0}")
+                    else:
+                        print(f"Write failed on block {block}")
+            elif self.cmd.isGen4():
+                print(f"{CR}Gen4 detected.{C0}")
+            else:
+                print(f"{CR}Try to wipe tag with keys from file{C0}")
+                for block in range(block_size):
+                    blockData = ""
+                    if block == 0:
+                        if len(resp[0]["uid"]) == 7:
+                            blockData = FactoryPreset.mf7bBlock0
+                        else:
+                            blockData = FactoryPreset.mf4bBlock0
+                    elif is_trailer_block(block):
+                        blockData = FactoryPreset.mfTrailerBlock
+                    else:
+                        blockData = "00" * 16
+                    for key in valid_keys:
+                        resp = self.cmd.mf1_write_block(
+                            resp[0]["uid"],
+                            block,
+                            bytes.fromhex(key),
+                            bytes.fromhex(blockData),
+                        )
+                        if resp:
+                            print(f"Write {blockData} to block {block} with key {key}")
+                            valid_keys.insert(0, valid_keys.pop(valid_keys.index(key)))
+                            break
+                        else:
+                            print(f"Auth Failed on block {block} with key {key}")
+        else:
+            print(f"{CR}Not MiFare Classic{C0}")
+
 @lf.command("scan")
 class LfScan(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -1600,11 +1761,12 @@ class LfScan(DeviceRequiredUnit):
         resp = self.cmd.lf_scan()
         if resp is not None:
             for data_tag in resp:
-                if "dec" in data_tag:                
+                if "dec" in data_tag:
                     print(f"- ID  : {data_tag['id'].upper()}")
                     print(f"  DEC : {data_tag['dec']}")
         else:
             print("LF Tag no found")
+
 
 @lf_em_410x.command("esetid")
 class LfEm410xESetId(DeviceRequiredUnit):
@@ -1633,7 +1795,10 @@ class LfEm410xESetId(DeviceRequiredUnit):
             print("ID must be 10 bytes hex")
             return
         resp = self.cmd.lf_em4100_eset_id(args.slot - 1, bytes.fromhex(id))
-        print(f"Set Slot {args.slot} ID to {id} {CY}{'Success' if resp else 'Fail'}{C0}")
+        print(
+            f"Set Slot {args.slot} ID to {id} {CY}{'Success' if resp else 'Fail'}{C0}"
+        )
+
 
 @ntag.command("emulate")
 class NtagEmulate(DeviceRequiredUnit):
@@ -1641,7 +1806,11 @@ class NtagEmulate(DeviceRequiredUnit):
         parser = ArgumentParserNoExit()
         parser.description = "Start NTAG emulating"
         parser.add_argument(
-            "--uri", type=str, required=False, help="URI to emulate", default="https://pn532killer.com"
+            "--uri",
+            type=str,
+            required=False,
+            help="URI to emulate",
+            default="https://pn532killer.com",
         )
         parser.epilog = (
             parser.epilog
