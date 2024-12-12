@@ -40,7 +40,7 @@ class Pn532CMD:
         self.device = pn532
 
     @expect_response(Status.SUCCESS)
-    def hf14a_scan(self):
+    def hf_14a_scan(self):
         self.device.set_normal_mode()
         """
         14a tags in the scanning field.
@@ -80,6 +80,28 @@ class Pn532CMD:
             resp.parsed = data
         return resp
 
+    def mf0_read_one_block(self, block):
+        resp = self.hf_14a_scan()
+        if resp == None:
+            print("No tag found")
+            return resp
+        data = struct.pack("!BBB", 0x01, MifareCommand.MfReadBlock, block)
+        resp = self.device.send_cmd_sync(Command.InDataExchange, data)
+        if len(resp.data) >= 16:
+            resp.parsed = resp.data
+        return resp
+
+    def mf0_write_one_block(self, block, data):
+        resp = self.hf_14a_scan()
+        if resp == None:
+            print("No tag found")
+            return resp
+        data = struct.pack("!BBB4s", 0x01, MifareCommand.MfWrite4Bytes, block, data)
+        resp = self.device.send_cmd_sync(Command.InDataExchange, data)
+        if len(resp.data) >= 16:
+            resp.parsed = resp.data
+        return resp
+
     @expect_response(Status.SUCCESS)
     def hfmf_cview(self):
         """
@@ -90,7 +112,7 @@ class Pn532CMD:
         self.device.set_normal_mode()
 
         tag_info = {}
-        resp = self.hf14a_scan()
+        resp = self.hf_14a_scan()
         if resp == None:
             print("No tag found")
             return resp
@@ -237,7 +259,7 @@ class Pn532CMD:
 
     def selectTag(self):
         tag_info = {}
-        resp = self.hf14a_scan()
+        resp = self.hf_14a_scan()
         self.device.halt()
         if resp == None:
             print("No tag found")
@@ -400,14 +422,14 @@ class Pn532CMD:
         data = struct.pack(format_str, 0x01, type_value, block, key, uid)
         resp = self.device.send_cmd_sync(Command.InDataExchange, data)
         return resp.data[0] == Status.HF_TAG_OK
-    
+
     mf1_authenticated_sector = -1
     mf1_authenticated_useKeyA = True
-    
+
     def mf1_read_block(self, block, key):
         current_sector = block // 4 if block < 128 else ((block - 128) // 16 + 32)
         if self.mf1_authenticated_sector != current_sector:
-            resp = self.hf14a_scan()
+            resp = self.hf_14a_scan()
             if resp == None:
                 print("No tag found")
                 return resp
@@ -415,13 +437,13 @@ class Pn532CMD:
             auth_result = self.mf1_auth_one_key_block(block, MfcKeyType.A, key, uidID1)
             if not auth_result:
                 self.mf1_authenticated_useKeyA = False
-                resp = self.hf14a_scan()
+                resp = self.hf_14a_scan()
                 auth_result = self.mf1_auth_one_key_block(block, MfcKeyType.B, key, uidID1)
             if not auth_result:
                 self.mf1_authenticated_useKeyA = True
                 return Response(Command.InDataExchange, Status.MF_ERR_AUTH)
             self.mf1_authenticated_sector = current_sector
-        
+
         data = struct.pack("!BBB", 0x01, MifareCommand.MfReadBlock, block)
         resp = self.device.send_cmd_sync(Command.InDataExchange, data)
         resp.parsed = resp.data
@@ -434,7 +456,7 @@ class Pn532CMD:
         return resp
 
     def mf1_read_one_block(self, block, type_value: MfcKeyType, key):
-        resp = self.hf14a_scan()
+        resp = self.hf_14a_scan()
         if resp == None:
             print("No tag found")
             return resp
@@ -1127,8 +1149,8 @@ def test_fn():
     cml = Pn532CMD(dev)
 
     try:
-        resp = cml.hf14a_scan()
-        print("hf14a_scan:", resp)
+        resp = cml.hf_14a_scan()
+        print("hf_14a_scan:", resp)
         options = {
                 "activate_rf_field": 0,
                 "wait_response": 1,

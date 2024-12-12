@@ -24,7 +24,7 @@ from pn532_enum import MfcKeyType, MifareCommand
 
 from pn532_utils import CLITree
 
-from pn532_utils import ArgumentParserNoExit, ArgsParserError, CG, CR, C0, CY
+from pn532_utils import ArgumentParserNoExit, ArgsParserError, CG, CR, C0, CY, CM
 
 
 import pn532_com
@@ -73,6 +73,7 @@ hw_mode = hw.subgroup("mode", "Mode-related commands")
 hf = root.subgroup("hf", "High-frequency commands")
 hf_14a = hf.subgroup("14a", "ISO 14443-A commands")
 hf_mf = hf.subgroup("mf", "MIFARE Classic commands")
+hf_mfu = hf.subgroup("mfu", "MIFARE Ultralight commands")
 hf_sniff = hf.subgroup("sniff", "Sniffer commands")
 
 hf_14b = hf.subgroup("14b", "ISO 14443-B commands")
@@ -380,7 +381,7 @@ class HF14AScan(DeviceRequiredUnit):
             print(f"- Guessed type(s) from SAK: {type_id_SAK_dict[int_sak]}")
 
     def scan(self):
-        resp = self.cmd.hf14a_scan()
+        resp = self.cmd.hf_14a_scan()
         if resp is not None:
             for data_tag in resp:
                 print(f"- UID: {data_tag['uid'].hex().upper()}")
@@ -1403,7 +1404,7 @@ examples:
 
     def gen1a_set_block0(self, block0: bytes):
         tag_info = {}
-        resp = self.cmd.hf14a_scan()
+        resp = self.cmd.hf_14a_scan()
         self.device_com.halt()
         if resp == None:
             print("No tag found")
@@ -1442,7 +1443,7 @@ examples:
 
     def gen2_set_block0(self, block0: bytes, key: bytes, use_key_b: bool = False):
         tag_info = {}
-        resp = self.cmd.hf14a_scan()
+        resp = self.cmd.hf_14a_scan()
         if resp == None:
             print("No tag found")
             return resp
@@ -1485,7 +1486,7 @@ examples:
 
     def gen4_set_block0(self, uid: bytes, block0: bytes, pwd="00000000"):
         tag_info = {}
-        resp = self.cmd.hf14a_scan()
+        resp = self.cmd.hf_14a_scan()
         if resp == None:
             print("No tag found")
             return resp
@@ -1579,7 +1580,7 @@ class HfMfWrbl(MF1WriteBlockArgsUnit):
             raise ArgsParserError("key must include 12 HEX symbols")
         if not re.match(r"^[a-fA-F0-9]{32}$", data):
             raise ArgsParserError("data must include 32 HEX symbols")
-        resp = self.cmd.hf14a_scan()
+        resp = self.cmd.hf_14a_scan()
         if resp == None:
             print("No tag found")
             return resp
@@ -1670,7 +1671,7 @@ class HfMfDump(DeviceRequiredUnit):
                         valid_keys.append(mifare_key)
 
         print(f"Total keys: {CR}{len(valid_keys)}{C0}")
-        resp = self.cmd.hf14a_scan()
+        resp = self.cmd.hf_14a_scan()
         if resp == None:
             print("No tag found")
             return resp
@@ -1758,7 +1759,7 @@ class HfMfWipe(DeviceRequiredUnit):
         print(f"Total keys: {CR}{len(valid_keys)}{C0}")
         print(f"{CR}Warning: Wiping the card will erase all data on the card.{C0}")
         print(f"{CR}Warning: This operation is irreversible.{C0}")
-        resp = self.cmd.hf14a_scan()
+        resp = self.cmd.hf_14a_scan()
         if resp == None:
             print("No tag found")
             return resp
@@ -1839,6 +1840,141 @@ class HfMfWipe(DeviceRequiredUnit):
                             print(f"Auth Failed on block {block} with key {key}")
         else:
             print(f"{CR}Not MiFare Classic{C0}")
+
+@hf_mfu.command("rdbl")
+class HfMfRdbl(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Read Mifare Ultralight block"
+        parser.add_argument(
+            "-blk",
+            type=int,
+            metavar="<dec>",
+            required=True,
+            help="Block to read",
+        )
+        return parser
+    
+    def on_exec(self, args: argparse.Namespace):
+        block = args.blk
+        resp = self.cmd.mf0_read_one_block(block)
+
+        if resp is not None:
+            if resp.parsed is not None:
+                # if length of parsed data is 16, only 4 bytes
+                if len(resp.parsed) == 16:
+                    first_block_data = resp.parsed[:4]
+                    decode_str = ""
+                    for j in range(4):
+                        byte = int(first_block_data[j:j + 1].hex(), 16)
+                        if 32 <= byte <= 126:
+                            decode_str += chr(byte)
+                        else:
+                            decode_str += " "
+                    print(f"{block:>2}: {first_block_data.hex().upper()}    |    {decode_str}")
+            else:
+                print(f"Block {block} Failed to read")
+
+@hf_mfu.command("wrbl")
+class HfMfWrbl(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Write Mifare Ultralight block"
+        parser.add_argument(
+            "-blk",
+            type=int,
+            metavar="<dec>",
+            required=True,
+            help="Block to write",
+        )
+        parser.add_argument(
+            "-d",
+            type=str,
+            metavar="<hex>",
+            required=True,
+            help="Data to write (4 bytes)",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        block = args.blk
+        data = args.d
+        if not re.match(r"^[a-fA-F0-9]{8}$", data):
+            print("Data must be 4 bytes hex")
+            return
+        resp = self.cmd.mf0_write_one_block(block, bytes.fromhex(data))
+        if resp:
+            print(f"Write block {block} with data {data}: {CG}Success{C0}")
+        else:
+            print(f"Write block {block} with data {data}: {CR}Failed{C0}")
+
+@hf_mfu.command("dump")
+class HfMfuDump(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Dump Mifare Ultralight card"
+        parser.add_argument(
+            "--file", action="store_true", help="Save to json file"
+        )
+        parser.add_argument(
+            "--bin", action="store_true", help="Save to bin file"
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        resp = self.cmd.hf_14a_scan()
+        if resp == None:
+            print("No tag found")
+            return resp
+
+        uid = resp[0]["uid"]
+        print(f" UID: {uid.hex().upper()}")
+        print(f" ATQA: {resp[0]['atqa'].hex().upper()}")
+        print(f" SAK: {resp[0]['sak'].hex().upper()}")
+
+        dump_map = {}
+        max_block = 4
+        block = 0
+        while block < max_block:
+            resp = self.cmd.mf0_read_one_block(block)
+            if block == 0 and resp and resp.parsed and len(resp.parsed) == 16:
+                max_block = resp.parsed[14] * 2 + 9
+                print(f" Max block: {max_block}\n")
+            if resp and resp.parsed and len(resp.parsed) == 16:
+                for i in range(4):
+                    block_index = block + i
+                    dump_map[block_index] = resp.parsed[i * 4 : i * 4 + 4].hex().upper()
+                    if block_index == 0:
+                        print(
+                            f"{block_index:>2}: {CR}{dump_map[block_index][:6]}{CY}{dump_map[block_index][6:]}{C0}"
+                        )
+                    elif block_index == 1:
+                        print(f"{block_index:>2}: {CR}{dump_map[block_index]}{C0}")
+                    elif block_index == 2:
+                        print(
+                            f"{block_index:>2}: {CY}{dump_map[block_index][:2]}{C0}{dump_map[block_index][2:]}{C0}"
+                        )
+                    elif block_index == 3:
+                        print(
+                            f"{block_index:>2}: {C0}{dump_map[block_index][:4]}{CM}{dump_map[block_index][4:6]}{C0}{dump_map[block_index][6:]}{C0}"
+                        )
+                    elif block_index == max_block + 1 or block_index == max_block + 2:
+                        print(
+                            f"{block_index:>2}: {CR}{dump_map[block_index]}{C0}"
+                        )
+                    else:
+                        decode_str = ""
+                        for j in range(4):
+                            byte = int(dump_map[block_index][j * 2 : j * 2 + 2], 16)
+                            if 32 <= byte <= 126:
+                                decode_str += chr(byte)
+                            else:
+                                decode_str += " "
+                        print(f"{block_index:>2}: {dump_map[block + i]}    |    {decode_str}")                        
+            else:
+                print(f"Block {block} Failed to read")
+            block += 4
+
 
 @lf.command("scan")
 class LfScan(DeviceRequiredUnit):

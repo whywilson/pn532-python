@@ -59,6 +59,9 @@ PN532Capabilities = [
     "HfMfDump",
     "HfMfWipe",
     "NtagEmulate",
+    "HfMfuRdbl",
+    "HfMfuWrbl",
+    "HfMfuDump",
 ]
 PN532KillerCapabilities = [
     "HWModeReader",
@@ -87,6 +90,7 @@ PN532KillerCapabilities = [
 class MifareCommand(enum.IntEnum):
     MfReadBlock = 0x30
     MfWriteBlock = 0xA0
+    MfWrite4Bytes = 0xA2
 
 class ApduCommand:
     C_APDU_CLA = 0
