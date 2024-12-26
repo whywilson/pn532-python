@@ -62,6 +62,7 @@ PN532Capabilities = [
     "HfMfuRdbl",
     "HfMfuWrbl",
     "HfMfuDump",
+    "HfMfuSetUid",
 ]
 PN532KillerCapabilities = [
     "HWModeReader",

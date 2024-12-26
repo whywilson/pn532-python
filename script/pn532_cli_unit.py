@@ -1854,9 +1854,12 @@ class HfMfRdbl(DeviceRequiredUnit):
             help="Block to read",
         )
         return parser
-    
+
     def on_exec(self, args: argparse.Namespace):
         block = args.blk
+        resp = self.hf_14a_scan()
+        if resp == None:
+            print("No tag found")
         resp = self.cmd.mf0_read_one_block(block)
 
         if resp is not None:
@@ -1902,6 +1905,14 @@ class HfMfWrbl(DeviceRequiredUnit):
         if not re.match(r"^[a-fA-F0-9]{8}$", data):
             print("Data must be 4 bytes hex")
             return
+        # if block is less than 4, show warning
+        if block < 3:
+            print(f"{CR}Warning: Single writing to block {block} may brick the tag{C0}")
+            return
+        resp = self.cmd.hf_14a_scan()
+        if resp == None:
+            print("No tag found")
+            return resp
         resp = self.cmd.mf0_write_one_block(block, bytes.fromhex(data))
         if resp:
             print(f"Write block {block} with data {data}: {CG}Success{C0}")
@@ -1975,6 +1986,70 @@ class HfMfuDump(DeviceRequiredUnit):
                 print(f"Block {block} Failed to read")
             block += 4
 
+@hf_mfu.command("setuid")
+class HfMfuSetUid(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set UID of DirectWrite Mifare Ultralight Tag"
+        parser.add_argument(
+            "-u",
+            type=str,
+            metavar="<hex>",
+            help="UID to set (7 bytes)",
+        )
+        # add example
+        parser.epilog = (
+            parser.epilog
+        ) = """
+examples:
+    hf mfu setuid -u 11223344556677
+"""
+        return parser
+
+    # UID0 ^ UID1 ^ UID2 ^ 0x88
+    def get_bcc0(self, uid):
+        bcc0 = uid[0] ^ uid[1] ^ uid[2] ^ 0x88
+        return bcc0
+
+    def get_bcc1(self, uid):
+        bcc1 = uid[3] ^ uid[4] ^ uid[5] ^ uid[6]
+        return bcc1
+
+    def get_first3_pages(self, uid):
+        bcc0 = self.get_bcc0(uid)
+        bcc1 = self.get_bcc1(uid)
+        pages = []
+        pages.append(uid[0:3] + bytes([bcc0]))
+        pages.append(uid[3:7])
+        pages.append(bytes([bcc1]) + bytes([0x00, 0x00, 0x00]))
+        return pages
+
+    def on_exec(self, args: argparse.Namespace):
+        if args.u is None or not re.match(r"^[a-fA-F0-9]{14}$", args.u):
+            print("UID must be 7 bytes hex")
+            return
+        uid = args.u
+        uid = bytes.fromhex(uid)
+        pages = self.get_first3_pages(uid)
+        resp = self.cmd.hf_14a_scan()
+        if resp == None:
+            print("No tag found")
+        if  resp[0]["sak"] != bytes([0x00]):
+            print("Not Ultralight tag")
+            return
+        print(f"Original UID: {CG}{resp[0]['uid'].hex().upper()}{C0}")
+        resp = self.cmd.mf0_read_one_block(0)
+        if resp is not None:
+            if resp.parsed is not None:
+                page2 = bytearray(pages[2])
+                page2[1] = resp.parsed[9]
+                pages[2] = bytes(page2)
+
+                for i in range(3):
+                    self.cmd.mf0_write_one_block(i, pages[i])
+                print(f"Updated  UID: {CG}{uid.hex().upper()}{C0}")
+            else:
+                print("Failed to read original Block0")
 
 @lf.command("scan")
 class LfScan(DeviceRequiredUnit):

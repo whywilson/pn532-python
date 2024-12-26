@@ -81,10 +81,6 @@ class Pn532CMD:
         return resp
 
     def mf0_read_one_block(self, block):
-        resp = self.hf_14a_scan()
-        if resp == None:
-            print("No tag found")
-            return resp
         data = struct.pack("!BBB", 0x01, MifareCommand.MfReadBlock, block)
         resp = self.device.send_cmd_sync(Command.InDataExchange, data)
         if len(resp.data) >= 16:
@@ -92,13 +88,9 @@ class Pn532CMD:
         return resp
 
     def mf0_write_one_block(self, block, data):
-        resp = self.hf_14a_scan()
-        if resp == None:
-            print("No tag found")
-            return resp
         data = struct.pack("!BBB4s", 0x01, MifareCommand.MfWrite4Bytes, block, data)
         resp = self.device.send_cmd_sync(Command.InDataExchange, data)
-        if len(resp.data) >= 16:
+        if len(resp.data) >= 1:
             resp.parsed = resp.data
         return resp
 
