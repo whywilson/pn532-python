@@ -34,7 +34,11 @@ BANNER = """
 class Pn532CLI:
     def __init__(self):
         self.device_com = pn532_com.Pn532Com()
-        
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+        args = parser.parse_args()
+        if args.debug:
+            pn532_com.DEBUG = True
 
     def get_cmd_node(self, node: pn532_utils.CLITree,
                      cmdline: list[str]) -> tuple[pn532_utils.CLITree, list[str]]:
@@ -53,13 +57,13 @@ class Pn532CLI:
 
         # No matching child node
         return node, cmdline[:]
-        
+
     def exec_cmd(self, cmd_str):
         if cmd_str == '':
             return
         if cmd_str in ["quit", "q", "e"]:
             cmd_str = 'exit'
-            
+
         # parse cmd
         argv = cmd_str.split()
 
@@ -79,7 +83,7 @@ class Pn532CLI:
         unit: pn532_cli_unit.BaseCLIUnit = tree_node.cls()
         unit.device_com = self.device_com
         args_parse_result = unit.args_parser()
-        
+
         assert args_parse_result is not None
         args: argparse.ArgumentParser = args_parse_result
         args.prog = tree_node.fullname
@@ -128,7 +132,7 @@ class Pn532CLI:
         device_name = self.device_com.get_device_name()
         status = f"[{device_string}{C0}] {device_name} --> "
         return status
-    
+
     @staticmethod
     def print_banner():
         """
@@ -139,21 +143,21 @@ class Pn532CLI:
         print(f"{CM}{BANNER}{C0}")
         print(f"{CM}  A Python-based CLI for PN532 / PN532Killer{C0}")
         print(f"{CM}=============================================={C0}")
-        
+
     def startCLI(self):
         self.completer = pn532_utils.CustomNestedCompleter.from_clitree(pn532_cli_unit.root)
         self.session = prompt_toolkit.PromptSession(completer=self.completer,
                                                     history=FileHistory(str(pathlib.Path.home() /
                                                                             ".pn532_history")))
 
-        if not DEBUG: 
+        if not pn532_com.DEBUG:
             self.print_banner()
         cmd_strs = []
         cmd_str = ''
         while True:
             if cmd_strs:
-                    print(f"{colorama.Fore.GREEN}>>> {cmd_strs[-1]}{colorama.Style.RESET_ALL}")
-                # cmd_str = cmd_strs.pop(0)
+                print(f"{colorama.Fore.GREEN}>>> {cmd_strs[-1]}{colorama.Style.RESET_ALL}")
+            # cmd_str = cmd_strs.pop(0)
             else:
                 try:
                     cmd_str = self.session.prompt(

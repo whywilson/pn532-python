@@ -1857,7 +1857,7 @@ class HfMfRdbl(DeviceRequiredUnit):
 
     def on_exec(self, args: argparse.Namespace):
         block = args.blk
-        resp = self.hf_14a_scan()
+        resp = self.cmd.hf_14a_scan()
         if resp == None:
             print("No tag found")
         resp = self.cmd.mf0_read_one_block(block)
