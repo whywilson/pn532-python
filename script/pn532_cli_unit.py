@@ -1975,7 +1975,51 @@ class HfMfuDump(DeviceRequiredUnit):
                 print(f"Block {block} Failed to read")
             block += 4
 
-
+@hf_14a.command("gen4pwd")
+class Hf14aGen4Pwd(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Brute force Gen4 password"
+        parser.add_argument(
+            "--start",
+            type=str,
+            metavar="<hex>",
+            default="00000000",
+            help="Start password (8 bytes)",
+        )
+        return parser
+    
+    def on_exec(self, args: argparse.Namespace):
+        resp = self.cmd.hf_14a_scan()
+        options = {
+                "activate_rf_field": 0,
+                "wait_response": 1,
+                "append_crc": 1,
+                "auto_select": 1,
+                "keep_rf_field": 1,
+                "check_response_crc": 0,
+            }
+        
+        password = bytes.fromhex(args.start)
+        start_time = time.time()
+        for i in range(16**8):
+            resp = self.cmd.hf14a_raw(
+            options=options,
+            resp_timeout_ms=1000,
+            data=bytes.fromhex(f"CF{password.hex()}C6"),
+            )
+            elapsed_time = time.time() - start_time
+            speed = (i + 1) / elapsed_time
+            print(f"\rTrying password: {password.hex().upper()} | Speed: {speed:.2f} pwd/s", end="")
+            if len(resp) >= 30 and resp[0] == 0x00:
+                print(f"\nFound password: {password.hex().upper()}")
+                print(f"Elapsed time: {elapsed_time:.2f} seconds")
+                break
+            
+            password = (int.from_bytes(password, 'big') + 1).to_bytes(4, 'big')
+        else:
+            print("\nPassword not found")
+             
 @lf.command("scan")
 class LfScan(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:

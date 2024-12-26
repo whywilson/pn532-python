@@ -196,6 +196,9 @@ class Pn532CMD:
         cs.auto_select = options["auto_select"]
         cs.keep_rf_field = options["keep_rf_field"]
         cs.check_response_crc = options["check_response_crc"]
+        
+        if cs.auto_select:
+            self.hf_14a_scan()
 
         if cs.activate_rf_field:
             self.device.halt()
