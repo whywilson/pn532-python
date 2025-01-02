@@ -49,23 +49,47 @@ jobs:
         name: ${{ matrix.artifact_name }}
         path: dist/
 
-    - name: Get latest tag
-      id: get_tag
-      run: echo ::set-output name=tag::$(git describe --tags `git rev-list --tags --max-count=1`)
+  create-release:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Create new tag
-      id: new_tag
-      run: |
-        NEW_TAG=$(echo ${{ steps.get_tag.outputs.tag }} | awk -F. -v OFS=. '{$NF += 1 ; print}')
-        echo ::set-output name=new_tag::$NEW_TAG
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          TAG=$(git describe --tags --abbrev=0 || echo "v0.0.0")
+          echo "Latest tag: $TAG"
+          echo "::set-output name=tag::${TAG}"
 
-    - name: Create Release
-      if: github.ref == 'refs/heads/main'
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.new_tag.outputs.new_tag }}
-        release_name: Release ${{ steps.new_tag.outputs.new_tag }}
-        draft: false
-        prerelease: false
+      - name: Increment tag
+        id: increment_tag
+        run: |
+          CURRENT_TAG="${{ steps.get_tag.outputs.tag }}"
+          echo "Current tag: $CURRENT_TAG"
+          VERSION_NUMBER=$(echo $CURRENT_TAG | sed -E 's/v([0-9]+)\.([0-9]+)\.([0-9]+)/\1 \2 \3/')
+          IFS=" " read -r major minor patch <<< "$VERSION_NUMBER"
+          patch=$((patch+1))
+          NEW_TAG="v$major.$minor.$patch"
+          echo "New tag: $NEW_TAG"
+          echo "::set-output name=new_tag::$NEW_TAG"
+
+      - name: Create Release
+        if: github.ref == 'refs/heads/main'
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.increment_tag.outputs.new_tag }}
+          release_name: Release ${{ steps.increment_tag.outputs.new_tag }}
+          draft: false
+          prerelease: false
+
+      - name: Upload assets to release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: dist/*
+
