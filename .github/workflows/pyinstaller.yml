@@ -51,10 +51,12 @@ jobs:
 
     - name: Get latest tag
       id: get_tag
+      shell: bash
       run: echo ::set-output name=tag::$(git describe --tags `git rev-list --tags --max-count=1`)
 
     - name: Create new tag
       id: new_tag
+      shell: bash
       run: |
         NEW_TAG=$(echo ${{ steps.get_tag.outputs.tag }} | awk -F. -v OFS=. '{$NF += 1 ; print}')
         echo ::set-output name=new_tag::$NEW_TAG
