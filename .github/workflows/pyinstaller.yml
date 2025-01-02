@@ -51,13 +51,23 @@ jobs:
 
     - name: Get latest tag
       id: get_tag
-      run: echo ::set-output name=tag::$(git describe --tags `git rev-list --tags --max-count=1`)
+      run: |
+        if [ ${{ runner.os }} == 'Windows' ]; then
+          echo ::set-output name=tag::$(git describe --tags $(git rev-list --tags --max-count=1))
+        else
+          echo ::set-output name=tag::$(git describe --tags `git rev-list --tags --max-count=1`)
+        fi
 
     - name: Create new tag
       id: new_tag
       run: |
-        NEW_TAG=$(echo ${{ steps.get_tag.outputs.tag }} | awk -F. -v OFS=. '{$NF += 1 ; print}')
-        echo ::set-output name=new_tag::$NEW_TAG
+        if [ ${{ runner.os }} == 'Windows' ]; then
+          NEW_TAG=$(echo ${{ steps.get_tag.outputs.tag }} | awk -F. -v OFS=. '{$NF += 1 ; print}')
+          echo ::set-output name=new_tag::$NEW_TAG
+        else
+          NEW_TAG=$(echo ${{ steps.get_tag.outputs.tag }} | awk -F. -v OFS=. '{$NF += 1 ; print}')
+          echo ::set-output name=new_tag::$NEW_TAG
+        fi
 
     - name: Create Release
       if: github.ref == 'refs/heads/main'
