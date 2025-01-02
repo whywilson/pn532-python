@@ -51,7 +51,7 @@ jobs:
 
   create-release:
     runs-on: ubuntu-latest
-    needs: build  # This ensures that create-release only runs after build finishes
+    needs: build  # Ensure create-release depends on build
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -106,18 +106,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: dist/*linux*
+          files: dist/*linux*  # Ensure this matches the files in dist/ for Linux
 
       - name: Upload Windows assets to release
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: dist/*windows*
+          files: dist/*windows*  # Ensure this matches the files in dist/ for Windows
 
       - name: Upload macOS assets to release
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: dist/*macos*
+          files: dist/*macos*  # Ensure this matches the files in dist/ for macOS
