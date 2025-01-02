@@ -51,10 +51,25 @@ jobs:
 
   create-release:
     runs-on: ubuntu-latest
-    needs: build
+    needs: build  # This ensures that create-release only runs after build finishes
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+
+      - name: Download build artifacts (Linux)
+        uses: actions/download-artifact@v3
+        with:
+          name: pn532_cli_release_linux
+
+      - name: Download build artifacts (Windows)
+        uses: actions/download-artifact@v3
+        with:
+          name: pn532_cli_release_windows
+
+      - name: Download build artifacts (macOS)
+        uses: actions/download-artifact@v3
+        with:
+          name: pn532_cli_release_macos
 
       - name: Get latest tag
         id: get_tag
@@ -86,10 +101,23 @@ jobs:
           draft: false
           prerelease: false
 
-      - name: Upload assets to release
+      - name: Upload Linux assets to release
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: dist/*
+          files: dist/*linux*
 
+      - name: Upload Windows assets to release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: dist/*windows*
+
+      - name: Upload macOS assets to release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: dist/*macos*
