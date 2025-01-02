@@ -49,15 +49,33 @@ jobs:
         name: ${{ matrix.artifact_name }}
         path: dist/
 
-    - name: Get latest tag
-      id: get_tag
+    - name: Get latest tag (Linux/MacOS)
+      if: runner.os != 'Windows'
+      id: get_tag_unix
+      shell: bash
       run: echo ::set-output name=tag::$(git describe --tags `git rev-list --tags --max-count=1`)
 
-    - name: Create new tag
-      id: new_tag
+    - name: Get latest tag (Windows)
+      if: runner.os == 'Windows'
+      id: get_tag_windows
+      shell: pwsh
+      run: echo "::set-output name=tag=$(git describe --tags $(git rev-list --tags --max-count=1))"
+
+    - name: Create new tag (Linux/MacOS)
+      if: runner.os != 'Windows'
+      id: new_tag_unix
+      shell: bash
       run: |
-        NEW_TAG=$(echo ${{ steps.get_tag.outputs.tag }} | awk -F. -v OFS=. '{$NF += 1 ; print}')
+        NEW_TAG=$(echo ${{ steps.get_tag_unix.outputs.tag }} | awk -F. -v OFS=. '{$NF += 1 ; print}')
         echo ::set-output name=new_tag::$NEW_TAG
+
+    - name: Create new tag (Windows)
+      if: runner.os == 'Windows'
+      id: new_tag_windows
+      shell: pwsh
+      run: |
+        $NEW_TAG = ${{ steps.get_tag_windows.outputs.tag }} -replace '(\d+)$', { [int]$args[0] + 1 } -f $matches[1]
+        echo "::set-output name=new_tag=$NEW_TAG"
 
     - name: Create Release
       if: github.ref == 'refs/heads/main'
@@ -65,7 +83,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ${{ steps.new_tag.outputs.new_tag }}
-        release_name: Release ${{ steps.new_tag.outputs.new_tag }}
+        tag_name: ${{ steps.new_tag_unix.outputs.new_tag || steps.new_tag_windows.outputs.new_tag }}
+        release_name: Release ${{ steps.new_tag_unix.outputs.new_tag || steps.new_tag_windows.outputs.new_tag }}
         draft: false
         prerelease: false
