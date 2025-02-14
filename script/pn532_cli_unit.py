@@ -1257,6 +1257,34 @@ class HfSniffSetUid(DeviceRequiredUnit):
                 return
         return str_to_bytes(block0)
 
+@hf_mf.command("esetuid")
+class HfMfESetUid(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set UID of Mifare 1K emulator"
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        parser.add_argument(
+            "-u",
+            type=str,
+            metavar="<hex>",
+            required=False,
+            help="UID to set (4 or 7 bytes)",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if args.u is None:
+            print("usage: hf mf esetuid [-h] -u <hex>")
+            print("hf mf esetuid: error: the following arguments are required: -u")
+            return
+        uid = bytes.fromhex(args.u)
+        if len(uid) not in [4, 7]:
+            print("UID length must be 4 or 7 bytes")
+            return
+        self.cmd.hf_mf_esetuid(args.slot - 1, uid)
+        print(f"Set Slot {args.slot} UID to {args.u} {CY}Success{C0}")
 
 @hf_mf.command("eload")
 class HfMfEload(DeviceRequiredUnit):

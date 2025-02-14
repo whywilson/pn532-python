@@ -83,6 +83,7 @@ PN532KillerCapabilities = [
     "HF15ESetBlock",
     "HF15ESetWriteProtect",
     "HF15ESetResvEasAfiDsfid",
+    "HfMfESetUid",
     "HfMfEload",
     "HfMfEread",
     "LfScan",
