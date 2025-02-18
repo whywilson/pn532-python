@@ -628,6 +628,65 @@ class HF15Wrbl(DeviceRequiredUnit):
         resp = self.cmd.hf_15_write_block(block, bytes.fromhex(data))
         print(f"Write block {block} {CY}{'Success' if resp else 'Fail'}{C0}")
 
+# scan, get info, and read block. if add --json, save as json, if add --bin, save as bin
+@hf_15.command("dump")
+class HF15Dump(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Dump ISO15693 tag data"
+        parser.add_argument(
+            "--json", action="store_true", help="Save to json file"
+        )
+        parser.add_argument(
+            "--bin", action="store_true", help="Save to bin file"
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        resp = self.cmd.hf_15_scan()
+        if resp is None:
+            print("ISO15693 Tag no found")
+            return
+        resp_info = self.cmd.hf_15_info()
+        if resp_info is None:
+            print("Get ISO15693 tag information failed")
+            return
+        else:
+            print(f"UID: {resp_info['uid'].hex().upper()}")
+            print(f"AFI: 0x{resp_info['afi']:02X}")
+            print(f"DSFID: 0x{resp_info['dsfid']:02X}")
+            print(f"IC Reference: 0x{resp_info['ic_reference']:02X}")
+            print(f"Block size: {resp_info['block_size']}")
+            
+        data = {}
+        for block in range(0, resp_info["block_size"]):
+            resp = self.cmd.hf_15_read_block(block)
+            if resp is not None:
+                data[block] = resp.hex().upper()
+                print(f"Block {block}: {data[block]}")
+            else:
+                data[block] 
+                print(f"Block {block}: Failed to read")
+                
+        if args.json:
+            dump_data = {}
+            dump_data["Card"] = resp_info
+            dump_data["blocks"] = data
+            file_name = "hf_15_" + resp_info['uid'].hex().upper() + ".json"
+            with open(file_name, "w") as f:
+                json.dump(dump_data, f)
+            print("Dump saved to " + file_name)
+        
+        if args.bin:
+            file_name = "hf_15_" + resp_info['uid'].hex().upper() + ".bin"
+            with open(file_name, "wb") as f:
+                for block in range(0, len(data)):
+                    if block in data:
+                        f.write(data[block].encode())
+                    else:
+                        f.write(b'\x00\x00\x00\x00')
+            print("Dump saved to " + file_name)
+        
 
 @hf_15.command("raw")
 class HF15Raw(DeviceRequiredUnit):
@@ -1198,6 +1257,34 @@ class HfSniffSetUid(DeviceRequiredUnit):
                 return
         return str_to_bytes(block0)
 
+@hf_mf.command("esetuid")
+class HfMfESetUid(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set UID of Mifare 1K emulator"
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        parser.add_argument(
+            "-u",
+            type=str,
+            metavar="<hex>",
+            required=False,
+            help="UID to set (4 or 7 bytes)",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if args.u is None:
+            print("usage: hf mf esetuid [-h] -u <hex>")
+            print("hf mf esetuid: error: the following arguments are required: -u")
+            return
+        uid = bytes.fromhex(args.u)
+        if len(uid) not in [4, 7]:
+            print("UID length must be 4 or 7 bytes")
+            return
+        self.cmd.hf_mf_esetuid(args.slot - 1, uid)
+        print(f"Set Slot {args.slot} UID to {args.u} {CY}Success{C0}")
 
 @hf_mf.command("eload")
 class HfMfEload(DeviceRequiredUnit):

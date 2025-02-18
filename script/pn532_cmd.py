@@ -577,7 +577,26 @@ class Pn532CMD:
         self.upload_data_block(slot = 0x11, data = block0)
         self.upload_data_block_done(slot = 0x11)
         return Response(Pn532KillerCommand.setEmulatorData, Status.SUCCESS)
-
+    
+    @expect_response(Status.SUCCESS)
+    def hf_mf_esetuid(self, slot, uid: bytes):
+        """
+        Set 4 byte or 7 byte uid for Mifare 1K emulator
+        """
+        if len(uid) == 4:
+            bcc = 0
+            for byte in uid:
+                bcc ^= byte
+            sak = b"\x08"
+            atqa = b"\x04\x00"
+            block0 = uid + bytes([bcc]) + sak + atqa + b"\x00" * 6
+        elif len(uid) == 7:
+            block0 = uid + b"\x7B" + b"\x00" * 8
+        else:
+            raise ValueError("UID length must be 4 or 7 bytes")
+        self.upload_data_block(slot=slot, data=block0)
+        self.upload_data_block_done(slot=slot)
+        
     @expect_response(Status.SUCCESS)
     def lf_scan(self):
         resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b"\x01\x06")
