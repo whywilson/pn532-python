@@ -908,7 +908,7 @@ class HF15Gen2Config(DeviceRequiredUnit):
         print(f"Config Gen2 Magic ISO15693 tag {CY}{'Success' if resp else 'Fail'}{C0}")
 
 
-@hf_15.command("esetuid")
+@hf_15.command("eSetUid")
 class HF15ESetUid(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
@@ -927,8 +927,8 @@ class HF15ESetUid(DeviceRequiredUnit):
 
     def on_exec(self, args: argparse.Namespace):
         if args.u is None:
-            print("usage: hf 15 esetuid [-h] -u <hex> [-s SLOT]")
-            print("hf 15 esetuid: error: the following arguments are required: -u")
+            print("usage: hf 15 eSetUid [-h] -u <hex> [-s SLOT]")
+            print("hf 15 eSetUid: error: the following arguments are required: -u")
             return
         uid = args.u
         if not re.match(r"^[a-fA-F0-9]{16}$", uid):
@@ -944,7 +944,7 @@ class HF15ESetUid(DeviceRequiredUnit):
         )
 
 
-@hf_15.command("esetblock")
+@hf_15.command("eSetBlock")
 class HF15ESetBlock(DeviceRequiredUnit):
     # add parameter -b <hex> to set block data(4 bytes)
     def args_parser(self) -> ArgumentParserNoExit:
@@ -980,7 +980,60 @@ class HF15ESetBlock(DeviceRequiredUnit):
             f"Set Slot {args.slot} block {args.b} to {block} {CY}{'Success' if resp else 'Fail'}{C0}"
         )
 
+@hf_15.command("eSetDump")
+class HF15ESetDump(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set dump data of ISO15693 Emulation"
+        parser.add_argument(
+            "--json",
+            type=str,
+            required=False,
+            metavar="<file>",
+            help="JSON file to load dump data",
+        )
+        parser.add_argument(
+            "--bin",
+            type=str,
+            required=False,
+            metavar="<file>",
+            help="BIN file to load dump data",
+        )
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        return parser
 
+    def on_exec(self, args: argparse.Namespace):
+        if not args.json and not args.bin:
+            print("Please choose either json file or bin file")
+            return
+
+        data = b""
+        if args.json:
+            if not os.path.exists(args.json):
+                print(f"File {args.json} not exists")
+                return
+            with open(args.json, "r") as f:
+                dump_data = json.load(f)
+                if "blocks" in dump_data:
+                    for block in range(len(dump_data["blocks"])):
+                        if str(block) in dump_data["blocks"]:
+                            data += bytes.fromhex(dump_data["blocks"][str(block)])
+                        else:
+                            data += b'\x00\x00\x00\x00'
+        elif args.bin:
+            if not os.path.exists(args.bin):
+                print(f"File {args.bin} not exists")
+                return
+            with open(args.bin, "rb") as f:
+                data = f.read()
+
+        resp = self.cmd.hf_15_eset_dump(args.slot - 1, data)
+        print(
+            f"Set Slot {args.slot} dump data {CY}{'Success' if resp else 'Fail'}{C0}"
+        )
+        
 @hf_15.command("eSetwriteprotect")
 class HF15ESetWriteProtect(DeviceRequiredUnit):
     # add parameter -b <hex> to set block data(4 bytes)
@@ -1257,7 +1310,7 @@ class HfSniffSetUid(DeviceRequiredUnit):
                 return
         return str_to_bytes(block0)
 
-@hf_mf.command("esetuid")
+@hf_mf.command("eSetUid")
 class HfMfESetUid(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
@@ -1276,8 +1329,8 @@ class HfMfESetUid(DeviceRequiredUnit):
 
     def on_exec(self, args: argparse.Namespace):
         if args.u is None:
-            print("usage: hf mf esetuid [-h] -u <hex>")
-            print("hf mf esetuid: error: the following arguments are required: -u")
+            print("usage: hf mf eSetUid [-h] -u <hex>")
+            print("hf mf eSetUid: error: the following arguments are required: -u")
             return
         uid = bytes.fromhex(args.u)
         if len(uid) not in [4, 7]:

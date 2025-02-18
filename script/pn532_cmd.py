@@ -775,6 +775,17 @@ class Pn532CMD:
         resp_set = self.upload_data_block(type = 0x03, slot = slot + 0x1A, index = index, data = data)
         resp_save = self.hf_15_esave(slot)
         return resp_set and resp_save
+    
+    def hf_15_eset_dump(self, slot, bin_data):
+        """
+        Set the whole dump for 15 emulator
+        """
+        for block_index in range(0, len(bin_data), 4):
+            block_data = bin_data[block_index:block_index + 4]
+            resp = self.upload_data_block(type=0x03, slot=slot + 0x1A, index=block_index // 4, data=block_data)
+            print(f"Set block {block_index // 4:02d} {block_data.hex()}: {resp}")
+        resp_save = self.hf_15_esave(slot)
+        return resp_save
 
     def hf_15_eset_resv_eas_afi_dsfid(self, slot, data):
         """
