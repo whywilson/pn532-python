@@ -70,9 +70,10 @@ class Pn532Com:
                     raise OpenFailException(error)
             assert self.serial_instance is not None
             try:
-                self.serial_instance.dtr = True  # must make dtr enable
+                self.serial_instance.dtr = False
+                self.serial_instance.rts = False
             except Exception:
-                # not all serial support dtr, e.g. virtual serial over BLE
+                print("Failed to set DTR/RTS")
                 pass
             self.serial_instance.timeout = THREAD_BLOCKING_TIMEOUT
             # clear variable
@@ -83,7 +84,7 @@ class Pn532Com:
             threading.Thread(target=self.thread_data_receive).start()
             threading.Thread(target=self.thread_data_transfer).start()
             threading.Thread(target=self.thread_check_timeout).start()
-            time.sleep(0.01)
+            
             self.set_normal_mode()
             time.sleep(0.01)
             is_pn532killer = self.is_pn532killer()
