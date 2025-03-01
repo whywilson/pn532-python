@@ -20,6 +20,16 @@ cd script
 python pn532_cli_main.py
 ```
 
+Run with debug mode enabled, every raw data will be printed out:
+```bash
+# Python script in Terminal
+python pn532_cli_main.py --debug
+# Windows executable in Terminal
+pn532_cli_main.exe --debug 
+# Linux or MacOS executable in Terminal
+./pn532_cli_main --debug
+```
+
 ## Features
 ### PN532
 - [x] Read and write Mifare Classic Mini, 1K, 4K
