@@ -14,6 +14,7 @@ from pn532_enum import ButtonPressFunction, ButtonType, MifareClassicDarksideSta
 from pn532_enum import MfcKeyType, MfcValueBlockOperator
 from time import sleep
 from pn532_utils import CC, CB, CG, C0, CY, CR
+from pn532_utils import NdefParser
 import os
 import subprocess
 import ndef
@@ -1108,6 +1109,61 @@ class Pn532CMD:
         self.device.set_normal_mode()
         return resp
 
+    def ntag_reader(self):
+        import webbrowser
+        """
+        Read NTAG and parse NDEF data. If the data contains a URI (e.g., link, tel, mailto), open it in the browser.
+        """
+        try:
+            self.device.set_normal_mode()
+            self.stop_flag = False
+            input_thread = threading.Thread(target=self.wait_for_enter)
+            input_thread.start()
+            
+            while not self.stop_flag:
+                resp = self.hf_14a_scan()
+                if resp is None:
+                    print("No tag found. Waiting for tag...")
+                    sleep(0.5)
+                    continue
+
+                dump_bin_data = bytearray()
+                max_block = 4
+                block = 0
+                while block < max_block:
+                    resp = self.mf0_read_one_block(block)
+                    if block == 0 and resp and resp.parsed and len(resp.parsed) == 16:
+                        max_block = resp.parsed[14] * 2 + 9
+                    if resp and resp.parsed and len(resp.parsed) == 16:
+                        dump_bin_data.extend(resp.parsed)
+                    else:
+                        print(f"Error reading block {block}: {resp}")
+                        break
+                    block += 4
+                print("NTAG Dump:")
+                for i in range(0, len(dump_bin_data), 16):
+                    print(f"{CG}{' '.join(f'{byte:02X}' for byte in dump_bin_data[i:i + 16])}  {''.join(chr(byte) if 32 <= byte <= 126 else '.' for byte in dump_bin_data[i:i + 16])}{C0}")
+                ndef_parser = NdefParser(dump_bin_data)
+                urls = ndef_parser.get_urls()
+                if urls:
+                    print("NDEF URLs:")
+                    for url in urls:
+                        print(f"{CG}{url}{C0}")
+                        
+                for url in urls:
+                    if "http" in url or "tel" in url or "mailto" in url:
+                        webbrowser.open(url)
+                
+                print("Remove card and place another, or press Enter to stop...")
+                sleep(1)
+            
+            print("Stopped NTAG reading.")
+            return []
+        except Exception as e:
+            print("Error reading NTAG:", e)
+            self.stop_flag = True
+            return []
+        
     stop_flag = False
     def wait_for_enter(self):
         print("Press Enter to stop...")

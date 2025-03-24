@@ -1310,132 +1310,6 @@ class HfSniffSetUid(DeviceRequiredUnit):
                 return
         return str_to_bytes(block0)
 
-@hf_mf.command("eSetUid")
-class HfMfESetUid(DeviceRequiredUnit):
-    def args_parser(self) -> ArgumentParserNoExit:
-        parser = ArgumentParserNoExit()
-        parser.description = "Set UID of Mifare 1K emulator"
-        parser.add_argument(
-            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
-        )
-        parser.add_argument(
-            "-u",
-            type=str,
-            metavar="<hex>",
-            required=False,
-            help="UID to set (4 or 7 bytes)",
-        )
-        return parser
-
-    def on_exec(self, args: argparse.Namespace):
-        if args.u is None:
-            print("usage: hf mf eSetUid [-h] -u <hex>")
-            print("hf mf eSetUid: error: the following arguments are required: -u")
-            return
-        uid = bytes.fromhex(args.u)
-        if len(uid) not in [4, 7]:
-            print("UID length must be 4 or 7 bytes")
-            return
-        self.cmd.hf_mf_esetuid(args.slot - 1, uid)
-        print(f"Set Slot {args.slot} UID to {args.u} {CY}Success{C0}")
-
-@hf_mf.command("eload")
-class HfMfEload(DeviceRequiredUnit):
-    def args_parser(self) -> ArgumentParserNoExit:
-        parser = ArgumentParserNoExit()
-        parser.formatter_class = argparse.RawDescriptionHelpFormatter
-        parser.description = "Load Mifare Dump to PN532Killer Slot"
-        parser.add_argument(
-            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
-        )
-        parser.add_argument(
-            "--bin",
-            type=str,
-            required=False,
-            help="MF 1k bin dump file",
-        )
-        parser.add_argument(
-            "--json",
-            type=str,
-            required=False,
-            help="MF 1k json dump file",
-        )
-        return parser
-
-    def on_exec(self, args: argparse.Namespace):
-        if not args.bin and not args.json:
-            print("Please choose either bin file or json file")
-            return
-        dump_map = {}
-        if args.bin:
-            #   read bytes from bin, each block 16 bytes, map like "0":"11223344556677889900AABBCCDDEEFF"
-            with open(args.bin, "rb") as bin_file:
-                block_index = 0
-                while True:
-                    block = bin_file.read(16)
-                    if not block:
-                        break
-                    dump_map[str(block_index)] = block.hex().upper()
-                    block_index += 1
-        elif args.json:
-            with open(args.json, "r") as json_file:
-                file_dump = json.load(json_file)
-                if "blocks" in file_dump:
-                    dump_map = file_dump["blocks"]
-
-        # if dump_map key count is not 64, return
-        if len(dump_map) != 64:
-            print("Invalid dump file")
-            return
-        for block_index, block_data in dump_map.items():
-            if not is_hex(block_data, 32):
-                print(f"Invalid block {block_index}")
-                return
-        self.cmd.hf_mf_load(dump_map, args.slot)
-
-
-@hf_mf.command("eread")
-class HfMfEread(DeviceRequiredUnit):
-    def args_parser(self) -> ArgumentParserNoExit:
-        parser = ArgumentParserNoExit()
-        parser.description = "Get Mifare Classic dump from PN532Killer Slot"
-        parser.add_argument(
-            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
-        )
-        parser.add_argument("--file", action="store_true", help="Save to json file")
-        parser.add_argument("--bin", action="store_true", help="Save to bin file")
-        return parser
-
-    def on_exec(self, args: argparse.Namespace):
-        self.device_com.set_work_mode(2, 0x01, args.slot - 1)
-        dump_map = self.cmd.hf_mf_eread(args.slot)
-        # {"0": "11223344556677889900AABBCCDDEEFF", "1": "11223344556677889900AABBCCDDEEFF", ...}
-        if not dump_map:
-            print("Get dump failed")
-            return
-        file_name = "mf_dump_{args.slot}"
-        file_index = 0
-        if args.file:
-            while True:
-                if os.path.exists(f"{file_name}_{file_index}.json"):
-                    file_index += 1
-                else:
-                    file_name = f"{file_name}_{file_index}.json"
-                    break
-            with open(file_name, "w") as json_file:
-                json.dump({"blocks": dump_map}, json_file)
-        if args.bin:
-            while True:
-                if os.path.exists(f"{file_name}_{file_index}.bin"):
-                    file_index += 1
-                else:
-                    file_name = f"{file_name}_{file_index}.bin"
-                    break
-            with open(file_name, "wb") as bin_file:
-                for block_index, block_data in dump_map.items():
-                    bin_file.write(bytes.fromhex(block_data))
-
-
 @hf_mf.command("setuid")
 class HfMfSetUid(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -1981,6 +1855,131 @@ class HfMfWipe(DeviceRequiredUnit):
         else:
             print(f"{CR}Not MiFare Classic{C0}")
 
+@hf_mf.command("eSetUid")
+class HfMfESetUid(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set 4 bytes or 7 bytes UID of PN532Killer Mifare 1K emulator"
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        parser.add_argument(
+            "-u",
+            type=str,
+            metavar="<hex>",
+            required=False,
+            help="UID to set (4 or 7 bytes)",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if args.u is None:
+            print("usage: hf mf eSetUid [-h] -u <hex>")
+            print("hf mf eSetUid: error: the following arguments are required: -u")
+            return
+        uid = bytes.fromhex(args.u)
+        if len(uid) not in [4, 7]:
+            print("UID length must be 4 or 7 bytes")
+            return
+        self.cmd.hf_mf_esetuid(args.slot - 1, uid)
+        print(f"Set Slot {args.slot} UID to {args.u} {CY}Success{C0}")
+
+@hf_mf.command("eLoad")
+class HfMfEload(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.formatter_class = argparse.RawDescriptionHelpFormatter
+        parser.description = "Load Mifare Classic Dump to PN532Killer Slot"
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        parser.add_argument(
+            "--bin",
+            type=str,
+            required=False,
+            help="MF 1k bin dump file",
+        )
+        parser.add_argument(
+            "--json",
+            type=str,
+            required=False,
+            help="MF 1k json dump file",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if not args.bin and not args.json:
+            print("Please choose either bin file or json file")
+            return
+        dump_map = {}
+        if args.bin:
+            #   read bytes from bin, each block 16 bytes, map like "0":"11223344556677889900AABBCCDDEEFF"
+            with open(args.bin, "rb") as bin_file:
+                block_index = 0
+                while True:
+                    block = bin_file.read(16)
+                    if not block:
+                        break
+                    dump_map[str(block_index)] = block.hex().upper()
+                    block_index += 1
+        elif args.json:
+            with open(args.json, "r") as json_file:
+                file_dump = json.load(json_file)
+                if "blocks" in file_dump:
+                    dump_map = file_dump["blocks"]
+
+        # if dump_map key count is not 64, return
+        if len(dump_map) != 64:
+            print("Invalid dump file")
+            return
+        for block_index, block_data in dump_map.items():
+            if not is_hex(block_data, 32):
+                print(f"Invalid block {block_index}")
+                return
+        self.cmd.hf_mf_load(dump_map, args.slot)
+
+
+@hf_mf.command("eRead")
+class HfMfEread(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Get Mifare Classic dump from PN532Killer Slot"
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        parser.add_argument("--file", action="store_true", help="Save to json file")
+        parser.add_argument("--bin", action="store_true", help="Save to bin file")
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        self.device_com.set_work_mode(2, 0x01, args.slot - 1)
+        dump_map = self.cmd.hf_mf_eread(args.slot)
+        # {"0": "11223344556677889900AABBCCDDEEFF", "1": "11223344556677889900AABBCCDDEEFF", ...}
+        if not dump_map:
+            print("Get dump failed")
+            return
+        file_name = "mf_dump_{args.slot}"
+        file_index = 0
+        if args.file:
+            while True:
+                if os.path.exists(f"{file_name}_{file_index}.json"):
+                    file_index += 1
+                else:
+                    file_name = f"{file_name}_{file_index}.json"
+                    break
+            with open(file_name, "w") as json_file:
+                json.dump({"blocks": dump_map}, json_file)
+        if args.bin:
+            while True:
+                if os.path.exists(f"{file_name}_{file_index}.bin"):
+                    file_index += 1
+                else:
+                    file_name = f"{file_name}_{file_index}.bin"
+                    break
+            with open(file_name, "wb") as bin_file:
+                for block_index, block_data in dump_map.items():
+                    bin_file.write(bytes.fromhex(block_data))
+
 @hf_mfu.command("rdbl")
 class HfMfRdbl(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -2254,7 +2253,7 @@ class LfScan(DeviceRequiredUnit):
             print("LF Tag no found")
 
 
-@lf_em_410x.command("esetid")
+@lf_em_410x.command("eSetid")
 class LfEm410xESetId(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
@@ -2310,3 +2309,13 @@ examples:
     def on_exec(self, args: argparse.Namespace):
         self.device_com.set_normal_mode()
         self.cmd.ntag_emulator(url=args.uri)
+
+@ntag.command("reader")
+class NtagReader(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Read NTAG data and open URI in browser"
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        self.cmd.ntag_reader()

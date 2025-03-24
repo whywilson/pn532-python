@@ -59,6 +59,7 @@ PN532Capabilities = [
     "HfMfDump",
     "HfMfWipe",
     "NtagEmulate",
+    "NtagReader",
     "HfMfuRdbl",
     "HfMfuWrbl",
     "HfMfuDump",
