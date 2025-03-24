@@ -2309,3 +2309,13 @@ examples:
     def on_exec(self, args: argparse.Namespace):
         self.device_com.set_normal_mode()
         self.cmd.ntag_emulator(url=args.uri)
+
+@ntag.command("reader")
+class NtagReader(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Read NTAG data and open URI in browser"
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        self.cmd.ntag_reader()

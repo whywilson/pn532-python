@@ -1,7 +1,7 @@
 import argparse
 import colorama
+import ndef
 from functools import wraps
-# once Python3.10 is mainstream, we can replace Union[str, None] by str | None
 from typing import Union, Callable, Any
 from prompt_toolkit.completion import Completer, NestedCompleter, WordCompleter
 from prompt_toolkit.completion.base import Completion
@@ -406,3 +406,72 @@ class ArgumentParserNoExit(argparse.ArgumentParser):
             print('\n'.join(lines))
         print('')
         self.help_requested = True
+
+class NdefParser:
+    """
+    Class for parsing binary data into NDEF records
+    """
+    def __init__(self, bindata):
+        self.bindata = bindata
+        self.records = []
+        self.urls = []
+        self.parse_records()
+
+    def parse_records(self):
+        """
+        Parse NDEF records from binary data, specifically handling Mifare Ultralight dumps
+        """
+        self.records = []
+        self.urls = []
+        i = 16
+        while i < len(self.bindata):
+            try:
+            # Search for a potential NDEF record start
+                if self.bindata[i] & 0x07 in [0x01, 0x03]:
+                    type_length = self.bindata[i + 1]
+                    payload_length = self.bindata[i + 2]
+                    type_start = i + 3
+                    payload_start = type_start + type_length
+                    payload_end = payload_start + payload_length
+
+                    if payload_end > len(self.bindata):
+                        i +=1
+                        continue
+                    record_type = self.bindata[type_start:type_start + type_length]
+                    payload = self.bindata[payload_start:payload_end]
+
+                    if record_type == b'U':  # URI Record
+                        self.records.append(payload)
+                        decoded_uri = self._decode_uri(payload)
+                        self.urls.append(decoded_uri)
+                        # print(f"Decoded URI: {decoded_uri}")
+                        i = payload_end
+            except Exception as e:
+                print(f"Error parsing record at byte {i}: {e}")
+            i += 1
+
+    def _decode_uri(self, payload):
+        """
+        Decode a URI payload according to the NDEF URI Record specification
+        """
+        uri_prefixes = [
+            "", "http://www.", "https://www.", "http://", "https://",
+            "tel:", "mailto:", "ftp://anonymous:anonymous@", "ftp://ftp.",
+            "ftps://", "sftp://", "smb://", "nfs://", "ftp://", "dav://",
+            "news:", "telnet://", "imap:", "rtsp://", "urn:", "pop:",
+            "sip:", "sips:", "tftp:", "btspp://", "btl2cap://", "btgoep://",
+            "tcpobex://", "irdaobex://", "file://", "urn:epc:id:",
+            "urn:epc:tag:", "urn:epc:pat:", "urn:epc:raw:", "urn:epc:",
+            "urn:nfc:"
+        ]
+
+        prefix_index = payload[0]
+        uri = uri_prefixes[prefix_index] + payload[1:].decode('utf-8')
+        return uri
+
+    def get_urls(self):
+        """
+        Return the list of extracted URLs
+        """
+        return self.urls
+
