@@ -1476,9 +1476,9 @@ examples:
             print(f" - {CR}Write failed.{C0}")
 
     def gen3_set_block0(self, uid: bytes, block0: bytes, lock: bool = False):
-        selectTag = self.cmd.selectTag()
-        if not selectTag:
-            print(f"{CR}Select tag failed{C0}")
+        isGen3 = self.cmd.isGen3()
+        if not isGen3:
+            print(f"{CR}Tag is not Gen3{C0}")
             return
         resp1 = self.cmd.setGen3Uid(uid)
         print(
@@ -1551,6 +1551,7 @@ examples:
         block0 = self.get_block0(uid, args)
         if block0 == None:
             return
+        self.device_com.set_normal_mode()
         gen = args.g
         if gen == 1:
             self.gen1a_set_block0(block0)
