@@ -1374,7 +1374,8 @@ class HfMfSetUid(DeviceRequiredUnit):
 examples:
   hf mf setuid -u 11223344
   hf mf setuid -u 11223344 -g 2
-  hf mf setuid --blk0 1122334444080400aabbccddeeff1122 -g 3
+  hf mf setuid -u 11223344556677 -g 3
+  hf mf setuid -u 11223344556677 --blk0 11223344556677084400120111003912 -g 3
   hf mf setuid --blk0 1122334444080400aabbccddeeff1122 -g 4 --pwd 00000000
 """
         return parser
@@ -1407,13 +1408,13 @@ examples:
                 print(f"{CR}Block0 needs to be 16 bytes{C0}")
                 return
 
-            uid = str_to_bytes(block0[0:8])
-            bcc = 0
-            bcc = uid[0] ^ uid[1] ^ uid[2] ^ uid[3]
-            # check if bcc is valid on the block0
-            if block0[8:10] != format(bcc, "02x"):
-                print(f"{CR}Invalid BCC{C0}")
-                return
+            if not (block0[16:20].lower() == "4400" or block0[16:20].lower() == "4200"):
+                uid = str_to_bytes(block0[0:8])
+                bcc = uid[0] ^ uid[1] ^ uid[2] ^ uid[3]
+                # check if bcc is valid on the block0
+                if block0[8:10] != format(bcc, "02x"):
+                    print(f"{CR}Invalid BCC{C0}")
+                    return
         return str_to_bytes(block0)
 
     def gen1a_set_block0(self, block0: bytes):
@@ -1476,10 +1477,11 @@ examples:
             print(f" - {CR}Write failed.{C0}")
 
     def gen3_set_block0(self, uid: bytes, block0: bytes, lock: bool = False):
-        selectTag = self.cmd.selectTag()
-        if not selectTag:
-            print(f"{CR}Select tag failed{C0}")
+        isGen3 = self.cmd.isGen3()
+        if not isGen3:
+            print(f"{CR}Tag is not Gen3{C0}")
             return
+        print("Found Gen3 Tag")
         resp1 = self.cmd.setGen3Uid(uid)
         print(
             f"Set UID to {uid.hex().upper()}: {CG}Success{C0}"
@@ -1551,6 +1553,7 @@ examples:
         block0 = self.get_block0(uid, args)
         if block0 == None:
             return
+        self.device_com.set_normal_mode()
         gen = args.g
         if gen == 1:
             self.gen1a_set_block0(block0)

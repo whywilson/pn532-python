@@ -342,6 +342,10 @@ class Pn532CMD:
         return False
 
     def setGen3Uid(self, uid: bytes):
+        selected_tag = self.selectTag()
+        if selected_tag is None:
+            print(f"{CR}Select tag failed{C0}")
+            return
         options = {
             "activate_rf_field": 0,
             "wait_response": 1,
@@ -352,7 +356,7 @@ class Pn532CMD:
         }
         command = "90FBCCCC07" + uid.hex()
         resp = self.hf14a_raw(
-            options=options, resp_timeout_ms=1000, data=bytes.fromhex(command)
+            options=options, resp_timeout_ms=2000, data=bytes.fromhex(command)
         )
         if resp[0] == 0x00:
             return True

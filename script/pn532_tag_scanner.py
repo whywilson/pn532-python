@@ -1,27 +1,8 @@
-import struct
-import re
-import ctypes
-from typing import Union
-import threading
-
 import pn532_com
-from unit.calc import crc16A, crc16Ccitt
-from pn532_com import Response, DEBUG
-from pn532_utils import expect_response
-from pn532_enum import Command, MifareCommand, ApduCommand, TagFile, NdefCommand, Status
-from pn532_enum import Pn532KillerCommand
 from pn532_cmd import Pn532CMD
 
-from pn532_enum import ButtonPressFunction, ButtonType, MifareClassicDarksideStatus
-from pn532_enum import MfcKeyType, MfcValueBlockOperator
-from time import sleep
-from pn532_utils import CC, CB, CG, C0, CY, CR
 import os
 import subprocess
-import ndef
-from multiprocessing import Pool, cpu_count
-from typing import Union
-from pathlib import Path
 from platform import uname
 import sys
 import select
@@ -32,7 +13,6 @@ if os.name == "nt":
 import tkinter as tk
 
 def test_fn():
-    # connect to pn532
     dev = pn532_com.Pn532Com()
     platform_name = uname().release
     if "Microsoft" in platform_name:
@@ -101,7 +81,6 @@ def test_fn():
     except Exception as e:
         print("Error:", e)
     dev.close()
-
 
 if __name__ == "__main__":
     test_fn()
