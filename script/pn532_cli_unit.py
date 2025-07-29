@@ -292,7 +292,7 @@ class HWModeReader(DeviceRequiredUnit):
 
 @hw_mode.command("e")
 class HWModeEmulator(DeviceRequiredUnit):
-    # support -type m14b1k, 15693, em4100 and -slot 1-8
+    # support -type Mifare Classic, MIFARE Ultralight, 15693, EM4100 and -slot 1-8
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Set device to emulator mode"
@@ -302,7 +302,7 @@ class HWModeEmulator(DeviceRequiredUnit):
             default=1,
             type=int,
             required=False,
-            help="1 - 4B1K, 3 - 15693, 4 - EM4100",
+            help="1 - MFC, 2 - MFU, 3 - 15693, 4 - EM4100",
         )
         parser.add_argument(
             "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
