@@ -2437,8 +2437,12 @@ class HfMfuEread(DeviceRequiredUnit):
                 else:
                     file_name = f"{file_name}_{file_index}.json"
                     break
+            # Convert bytes to hex strings for JSON serialization
+            json_dump_map = {}
+            for page_index, page_data in dump_map.items():
+                json_dump_map[str(page_index)] = page_data.hex().upper()
             with open(file_name, "w") as json_file:
-                json.dump({"pages": dump_map}, json_file)
+                json.dump({"pages": json_dump_map}, json_file)
         if args.bin:
             file_name_bin = f"mfu_dump_{args.slot}"
             file_index = 0
