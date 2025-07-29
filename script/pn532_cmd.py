@@ -858,6 +858,40 @@ class Pn532CMD:
             mifare_dump[block] = resp
         return mifare_dump
 
+    def hf_mfu_eread(self, slot):
+        """
+        Mifare Ultralight emulator read to dump
+
+        :param slot: slot number
+        :return:
+        """
+        slot = slot - 1
+        self.prepare_get_emulator_data(type = 2, slot = slot)
+        sleep(0.02)
+        mfu_dump = {}
+        # Read first 4 pages
+        max_page = 64
+        for page in range(4):
+            resp = self.download_data_block(type = 2, slot = slot, index = page)
+            if page == 0:
+                print(f"page {page:02d}: {CY}{resp.hex()[0:6].upper()}{CR}{resp.hex()[6:8].upper()}{C0}")
+            elif page == 1:
+                print(f"page {page:02d}: {CY}{resp.hex().upper()}{C0}")
+            elif page == 2:
+                print(f"page {page:02d}: {CR}{resp.hex()[0:2].upper()}{CG}{resp.hex()[2:].upper()}{C0}")
+            elif page == 3:
+                print(f"page {page:02d}: {CG}{resp.hex().upper()}{C0}")
+                # page 3 , index 2 is the max page indicator
+                if len(resp) >= 3:
+                    max_page = resp[2] * 2 + 12
+            mfu_dump[page] = resp
+        # Read remaining pages
+        for page in range(4, max_page):
+            resp = self.download_data_block(type = 2, slot = slot, index = page)
+            print(f"page {page:02d}: {resp.hex().upper()}")
+            mfu_dump[page] = resp
+        return mfu_dump
+
     @expect_response(Status.SUCCESS)
     def upload_data_block(self, type = 1, slot = 0, index = 0, data : bytes = b""):
         """

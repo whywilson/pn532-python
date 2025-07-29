@@ -20,7 +20,7 @@ from typing import Union
 from pathlib import Path
 from platform import uname
 from datetime import datetime
-from pn532_enum import MfcKeyType, MifareCommand
+from pn532_enum import MfcKeyType, MifareCommand, PN532KillerMode, PN532KillerTagType
 
 from pn532_utils import CLITree
 
@@ -287,7 +287,7 @@ class HWModeReader(DeviceRequiredUnit):
 
     def on_exec(self, args: argparse.Namespace):
         self.device_com.set_work_mode()
-        print("Switch to {  Tag Reader  } mode successfully.")
+        print("Switch to {  Reader  } mode successfully.")
 
 
 @hw_mode.command("e")
@@ -312,7 +312,7 @@ class HWModeEmulator(DeviceRequiredUnit):
     def on_exec(self, args: argparse.Namespace):
         type = args.type
         slot = args.slot
-        self.device_com.set_work_mode(2, type, slot - 1)
+        self.device_com.set_work_mode(PN532KillerMode.EMULATOR, type, slot - 1)
         print("Switch to {  Emulator  } mode successfully.")
 
 
@@ -333,7 +333,7 @@ class HWModeSniffer(DeviceRequiredUnit):
         return parser
 
     def on_exec(self, args: argparse.Namespace):
-        self.device_com.set_work_mode(3, 1, args.type)
+        self.device_com.set_work_mode(PN532KillerMode.SNIFFER, PN532KillerTagType.MFC, args.type)
         print("Switch to {  Sniffer  } mode successfully.")
 
 
@@ -2126,7 +2126,7 @@ class HfMfEread(DeviceRequiredUnit):
         return parser
 
     def on_exec(self, args: argparse.Namespace):
-        self.device_com.set_work_mode(2, 0x01, args.slot - 1)
+        self.device_com.set_work_mode(PN532KillerMode.EMULATOR, PN532KillerTagType.MFC, args.slot - 1)
         dump_map = self.cmd.hf_mf_eread(args.slot)
         # {"0": "11223344556677889900AABBCCDDEEFF", "1": "11223344556677889900AABBCCDDEEFF", ...}
         if not dump_map:
@@ -2408,6 +2408,49 @@ examples:
                 print(f"Updated  UID: {CG}{uid.hex().upper()}{C0}")
             else:
                 print("Failed to read original Block0")
+
+@hf_mfu.command("eRead")
+class HfMfuEread(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Get Mifare Ultralight dump from PN532Killer Slot"
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        parser.add_argument("--file", action="store_true", help="Save to json file")
+        parser.add_argument("--bin", action="store_true", help="Save to bin file")
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        self.device_com.set_work_mode(PN532KillerMode.EMULATOR, PN532KillerTagType.MFU, args.slot - 1)
+        dump_map = self.cmd.hf_mfu_eread(args.slot)
+        # {"0": "11223344", "1": "55667788", ...}
+        if not dump_map:
+            print("Get dump failed")
+            return
+        file_name = f"mfu_dump_{args.slot}"
+        file_index = 0
+        if args.file:
+            while True:
+                if os.path.exists(f"{file_name}_{file_index}.json"):
+                    file_index += 1
+                else:
+                    file_name = f"{file_name}_{file_index}.json"
+                    break
+            with open(file_name, "w") as json_file:
+                json.dump({"pages": dump_map}, json_file)
+        if args.bin:
+            file_name_bin = f"mfu_dump_{args.slot}"
+            file_index = 0
+            while True:
+                if os.path.exists(f"{file_name_bin}_{file_index}.bin"):
+                    file_index += 1
+                else:
+                    file_name_bin = f"{file_name_bin}_{file_index}.bin"
+                    break
+            with open(file_name_bin, "wb") as bin_file:
+                for page_index, page_data in dump_map.items():
+                    bin_file.write(page_data)
 
 @lf.command("scan")
 class LfScan(DeviceRequiredUnit):
