@@ -2540,7 +2540,7 @@ class NtagReader(DeviceRequiredUnit):
 
     def on_exec(self, args: argparse.Namespace):
         self.cmd.ntag_reader()
-        # 读取dump文件
+        # Read dump file
         dump_data = {}
         if args.f.endswith('.mfd'):
             with open(args.f, 'r') as f:
@@ -2560,7 +2560,6 @@ class NtagReader(DeviceRequiredUnit):
             print(f"{CR}Error: Unsupported file format{C0}")
             return
 
-        # 扫描卡片
         resp = self.cmd.hf_14a_scan()
         if resp is None:
             print("No tag found")
@@ -2570,7 +2569,7 @@ class NtagReader(DeviceRequiredUnit):
         uid = resp[0]["uid"]
         key = bytes.fromhex(args.k)
 
-        # 根据卡片类型选择写入方式
+        # Write tag depending on generation
         gen = args.g
         if gen == 1:  # Gen1A
             if not self.cmd.isGen1a():
@@ -2620,13 +2619,13 @@ class NtagReader(DeviceRequiredUnit):
                 print(f"{CR}Tag is not Gen3{C0}")
                 return
             print("Found Gen3 Tag")
-            # 设置UID
+            # Set UI
             resp1 = self.cmd.setGen3Uid(uid)
             print(f"Set UID to {uid.hex().upper()}: {CG}Success{C0}" if resp1 else f"Set UID to {uid.hex().upper()}: {CR}Failed{C0}")
-            # 设置block0
+            # Set block0
             resp2 = self.cmd.setGen3Block0(bytes.fromhex(dump_data[0]))
             print(f"Set block0: {CG}Success{C0}" if resp2 else f"Set block0: {CR}Failed{C0}")
-            # 写入其他block
+            # Write other blocks
             for block, block_data in dump_data.items():
                 if block == 0:
                     continue
