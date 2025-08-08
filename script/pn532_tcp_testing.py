@@ -1,22 +1,17 @@
 import pn532_com
 from pn532_cmd import Pn532CMD
 
-import os
-import subprocess
 from platform import uname
-import sys
-import select
-import serial.tools.list_ports
 
 def test_fn():
     dev = pn532_com.Pn532Com()
-    # Connect via UDP to local test server
+    # Connect via TCP to local test server
     try:
-        dev.open("udp:192.168.0.109:18888")
+        dev.open("tcp:192.168.20.32:18889")
         if not dev.isOpen():
-            print("Failed to connect to udp:192.168.0.109:18888")
+            print("Failed to connect to tcp:192.168.20.32:18889")
             return
-        print(f"Connected to udp:192.168.0.109:18888")
+        print(f"Connected to tcp:192.168.20.32:18889")
         cml = Pn532CMD(dev)
     except Exception as e:
         print(f"Connection failed: {e}")

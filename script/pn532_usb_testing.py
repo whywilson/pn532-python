@@ -6,7 +6,6 @@ import sys
 
 def test_fn():
     dev = pn532_com.Pn532Com()
-    # Connect via UDP to local test server
     try:
         dev.open("/dev/tty.wchusbserial210")
         if not dev.isOpen():

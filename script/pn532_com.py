@@ -210,15 +210,9 @@ class Pn532Com:
             nonlocal data_buffer
             if len(data_buffer) >= skip_pattern_length:
                 if data_buffer[:skip_pattern_length] == skip_pattern:
-                    if DEBUG:
-                        print(f"Received ACK frame at start, removing from buffer. Buffer before: {data_buffer.hex()}")
                     data_buffer = data_buffer[skip_pattern_length:]
-                    if DEBUG:
-                        print(f"Buffer after ACK removal: {data_buffer.hex()}")
                     return True
                 if data_buffer[-skip_pattern_length:] == skip_pattern:
-                    if DEBUG:
-                        print("Received ACK frame at end, removing from buffer")
                     data_buffer = data_buffer[:-skip_pattern_length]
                     return True
             return False
@@ -234,23 +228,14 @@ class Pn532Com:
                 break
 
             if len(data_bytes) > 0:
-                if DEBUG:
-                    print(f"Received bytes: {data_bytes.hex()}")
                 data_buffer.extend(data_bytes)
-                
-                if DEBUG:
-                    print(f"Buffer after extend: {data_buffer.hex()}")
                 
                 while len(data_buffer) > 0:
                     if check_for_ack_frame():
                         reset_frame_parsing()
-                        if DEBUG:
-                            print(f"After ACK removal, continuing with buffer: {data_buffer.hex()}")
                         continue
 
                     if len(data_buffer) > 300: 
-                        if DEBUG:
-                            print("Buffer too long, resetting frame parsing")
                         clear_buffer()
                         break
 
@@ -269,8 +254,6 @@ class Pn532Com:
 
                     if data_position == 0:
                         if data_buffer[0] != self.data_preamble[0]:
-                            if DEBUG:
-                                print(f"Data frame no preamble byte: {data_buffer[0]:02x}")
                             preamble_pos = -1
                             for i in range(len(data_buffer)):
                                 if data_buffer[i] == self.data_preamble[0]:
@@ -285,8 +268,6 @@ class Pn532Com:
                                 break
                     elif data_position == 1:
                         if data_buffer[1] != self.data_start_code[0]:
-                            if DEBUG:
-                                print(f"Data frame start code error at position 1: {data_buffer[1]:02x}")
                             clear_buffer()
                             break
                     elif data_position == 2:

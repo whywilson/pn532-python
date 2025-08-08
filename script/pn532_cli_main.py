@@ -123,12 +123,31 @@ class Pn532CLI:
         self.device_com.set_device_name(device_name)
 
     def get_prompt(self):
-        """
-        Retrieve the cli prompt
-
-        :return: current cmd prompt
-        """
-        device_string = f"{CG}USB" if self.device_com.isOpen() else f"{CR}Offline"
+        # Retrieve the cli prompt
+        # :return: current cmd prompt
+        if self.device_com.isOpen():
+            # 判断连接类型
+            port = getattr(self.device_com, 'port', None)
+            if port is None and hasattr(self.device_com, 'communication') and hasattr(self.device_com.communication, 'serial_instance'):
+                # Serial connection
+                port = getattr(self.device_com.communication.serial_instance, 'port', None)
+            conn_type = "USB"
+            if port:
+                if isinstance(port, str):
+                    if port.startswith('tcp:'):
+                        conn_type = "TCP"
+                    elif port.startswith('udp:'):
+                        conn_type = "UDP"
+            # 兼容 CommunicationFactory 连接
+            if hasattr(self.device_com, 'communication'):
+                comm = self.device_com.communication
+                if comm.__class__.__name__ == "TCPCommunication":
+                    conn_type = "TCP"
+                elif comm.__class__.__name__ == "UDPCommunication":
+                    conn_type = "UDP"
+            device_string = f"{CG}{conn_type}"
+        else:
+            device_string = f"{CR}Offline"
         device_name = self.device_com.get_device_name()
         status = f"[{device_string}{C0}] {device_name} --> "
         return status
