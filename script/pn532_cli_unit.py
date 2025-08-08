@@ -1165,8 +1165,9 @@ class HWWakeUp(DeviceRequiredUnit):
 class HWConnect(BaseCLIUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
-        parser.description = "Connect to pn532 by serial port"
-        parser.add_argument("-p", "--port", type=str, required=False)
+        parser.description = "Connect to pn532 by serial port, TCP or UDP"
+        parser.add_argument("-p", "--port", type=str, required=False, 
+                          help="Connection string: /dev/ttyUSB0, COM3, tcp:192.168.1.100:1234, udp:192.168.1.100:2345")
         return parser
 
     def on_exec(self, args: argparse.Namespace):
@@ -1215,9 +1216,21 @@ class HWConnect(BaseCLIUnit):
                     print(
                         "PN532 not found, please connect the device or try connecting manually with the -p flag."
                     )
+                    print("Examples:")
+                    print("  hw connect -p /dev/ttyUSB0        # Serial connection")
+                    print("  hw connect -p COM3               # Windows serial connection")
+                    print("  hw connect -p tcp:192.168.1.100:1234  # TCP connection")
+                    print("  hw connect -p udp:192.168.1.100:2345  # UDP connection")
                     return
                 # print connecting to device name
-            print(f"Connecting to device on port {args.port}")
+            
+            if args.port.startswith('tcp:'):
+                print(f"Connecting to device via TCP: {args.port[4:]}")
+            elif args.port.startswith('udp:'):
+                print(f"Connecting to device via UDP: {args.port[4:]}")
+            else:
+                print(f"Connecting to device on serial port: {args.port}")
+                
             self.device_com.open(args.port)
             print("Device:", self.device_com.get_device_name())
         except Exception as e:

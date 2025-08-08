@@ -8,6 +8,7 @@ from typing import Union
 from pn532_enum import Command, Pn532KillerCommand, Status, PN532KillerMode, PN532KillerTagType
 from pn532_enum import BasicCapabilities, PN532Capabilities, PN532KillerCapabilities
 from pn532_utils import CC, CB, CG, C0, CY, CR
+from pn532_communication import CommunicationInterface, CommunicationFactory
 
 DEBUG = False 
 THREAD_BLOCKING_TIMEOUT = 0.1
@@ -39,7 +40,7 @@ class Pn532Com:
         """
         Create a PN532 device instance
         """
-        self.serial_instance: Union[serial.Serial, None] = None
+        self.communication: Union[CommunicationInterface, None] = None
         self.send_data_queue = queue.Queue()
         self.wait_response_map = {}
         self.event_closing = threading.Event()
@@ -54,28 +55,30 @@ class Pn532Com:
         return self.device_name
 
     def isOpen(self) -> bool:
-        return self.serial_instance is not None and self.serial_instance.is_open
+        return self.communication is not None and self.communication.is_open()
 
     def open(self, port) -> "Pn532Com":
         if not self.isOpen():
             error = None
             try:
-                # open serial port
-                self.serial_instance = serial.Serial(port=port, baudrate=115200)
-                # print device name
+                # 创建通信接口
+                self.communication = CommunicationFactory.create_communication(port)
+                protocol_type, actual_address = CommunicationFactory.parse_address(port)
+                
+                # 打开连接
+                if not self.communication.open(actual_address):
+                    raise Exception(f"Failed to open {protocol_type} connection to {actual_address}")
+                
+                print(f"Opened {protocol_type} connection to {actual_address}")
             except Exception as e:
                 error = e
             finally:
                 if error is not None:
                     raise OpenFailException(error)
-            assert self.serial_instance is not None
-            try:
-                self.serial_instance.dtr = False
-                self.serial_instance.rts = False
-            except Exception:
-                print("Failed to set DTR/RTS")
-                pass
-            self.serial_instance.timeout = THREAD_BLOCKING_TIMEOUT
+            
+            assert self.communication is not None
+            self.communication.set_timeout(THREAD_BLOCKING_TIMEOUT)
+            
             # clear variable
             self.send_data_queue.queue.clear()
             self.wait_response_map.clear()
@@ -104,17 +107,18 @@ class Pn532Com:
     def close(self):
         self.event_closing.set()
         try:
-            assert self.serial_instance is not None
-            self.serial_instance.close()
+            if self.communication is not None:
+                self.communication.close()
         except Exception:
             pass
         finally:
-            self.serial_instance = None
+            self.communication = None
         self.wait_response_map.clear()
         self.send_data_queue.queue.clear()
 
     def set_normal_mode(self) -> response:
-        self.serial_instance.write(bytes.fromhex("5500000000000000000000000000"))
+        self.communication.write(bytes.fromhex("5500000000000000000000000000"))
+        time.sleep(0.1)
         response = self.send_cmd_sync(Command.SAMConfiguration, bytes.fromhex("01"))
         return response
 
@@ -192,136 +196,187 @@ class Pn532Com:
         skip_pattern = bytearray.fromhex("0000ff00ff00")
         skip_pattern_length = len(skip_pattern)
 
+        def reset_frame_parsing():
+            nonlocal data_position
+            data_position = 0
+
+        def clear_buffer():
+            nonlocal data_buffer, data_position, data_length
+            data_buffer.clear()
+            data_position = 0
+            data_length = 0x0000
+
+        def check_for_ack_frame():
+            nonlocal data_buffer
+            if len(data_buffer) >= skip_pattern_length:
+                if data_buffer[:skip_pattern_length] == skip_pattern:
+                    if DEBUG:
+                        print(f"Received ACK frame at start, removing from buffer. Buffer before: {data_buffer.hex()}")
+                    data_buffer = data_buffer[skip_pattern_length:]
+                    if DEBUG:
+                        print(f"Buffer after ACK removal: {data_buffer.hex()}")
+                    return True
+                if data_buffer[-skip_pattern_length:] == skip_pattern:
+                    if DEBUG:
+                        print("Received ACK frame at end, removing from buffer")
+                    data_buffer = data_buffer[:-skip_pattern_length]
+                    return True
+            return False
+
         while self.isOpen():
             try:
-                assert self.serial_instance is not None
-                data_bytes = self.serial_instance.read()
+                assert self.communication is not None
+                data_bytes = self.communication.read(32) 
             except Exception as e:
                 if not self.event_closing.is_set():
-                    print(f"Serial Error {e}, thread for receiver exit.")
+                    print(f"Communication Error {e}, thread for receiver exit.")
                 self.close()
                 break
 
             if len(data_bytes) > 0:
-                data_byte = data_bytes[0]
-                data_buffer.append(data_byte)
-                # print(data_position, data_buffer.hex(), len(data_buffer), "data_length", data_length)
-
-                # 检查是否需要跳过模式
-                if len(data_buffer) >= skip_pattern_length:
-                    if data_buffer[-skip_pattern_length:] == skip_pattern:
-                        # print("  Skipping pattern:", skip_pattern.hex())
-                        data_buffer.clear()
-                        data_position = 0
+                if DEBUG:
+                    print(f"Received bytes: {data_bytes.hex()}")
+                data_buffer.extend(data_bytes)
+                
+                if DEBUG:
+                    print(f"Buffer after extend: {data_buffer.hex()}")
+                
+                while len(data_buffer) > 0:
+                    if check_for_ack_frame():
+                        reset_frame_parsing()
+                        if DEBUG:
+                            print(f"After ACK removal, continuing with buffer: {data_buffer.hex()}")
                         continue
 
-                # 验证前导码和起始码
-                if data_position == 0:
-                    if len(data_buffer) < 1:
-                        print(
-                            "Waiting for more bytes at position 0"
-                        )  # Wait for more bytes
+                    if len(data_buffer) > 300: 
+                        if DEBUG:
+                            print("Buffer too long, resetting frame parsing")
+                        clear_buffer()
+                        break
+
+                    if data_position == 0 and len(data_buffer) < 1:
+                        break
+                    elif data_position == 1 and len(data_buffer) < 2:
+                        break
+                    elif data_position == 2 and len(data_buffer) < 3:
+                        break
+                    elif data_position == 3 and len(data_buffer) < 4:
+                        break
+                    elif data_position == 4 and len(data_buffer) < 5:
+                        break
+                    elif data_position >= 5 and len(data_buffer) < 6 + data_length:
+                        break
+
+                    if data_position == 0:
                         if data_buffer[0] != self.data_preamble[0]:
-                            print("Data frame no preamble byte.")
-                            data_position = 0
-                            data_buffer.clear()
-                            continue
-                elif data_position == 1:
-                    if len(data_buffer) < 2:
-                        print(
-                            "Waiting for more bytes at position 1"
-                        )  # Wait for more bytes
-                    # if data_buffer[1] != 0x00:
-                    #     print("Data frame start code error.")
-                    #     continue
-                elif data_position == 2:
-                    if len(data_buffer) < 3:
-                        print(
-                            "Waiting for more bytes at position 2"
-                        )  # Wait for more bytes
-                    # if data_buffer[2] != 0xFF:
-                    #     print("Data frame start code error.")
-                    #     continue
-                elif data_position == 3:
-                    if len(data_buffer) < 4:
-                        print(
-                            "Waiting for more bytes at position 3"
-                        )  # Wait for more bytes
-                    data_length = data_buffer[3]  # Get the data length byte
-                elif data_position == 4 + data_length and data_length > 0:
-                    if data_buffer[3] != self.dcs(data_buffer[4:5]):
-                        print("Data frame LCS error.")
-                        data_position = 0
-                        data_buffer.clear()
-                        continue
-                    # print("lengh checksum ok")
-                elif data_position == 4 + data_length + 1:
-                    # Check DCS
-                    if data_buffer[4 + data_length + 1] != self.dcs(
-                        data_buffer[5 : 4 + data_length + 1]
-                    ):
-                        print("Data frame DCS error.")
-                        data_position = 0
-                        data_buffer.clear()
-                        continue
-                    # print("data checksum ok")
-                elif data_position == 4 + data_length + 2:
-                    if len(data_buffer) < 4 + data_length + 3:
-                        print("len(data_buffer) < 4 + data_length + 3:")
-                        continue
-                    # Check POSTAMBLE
-                    if data_buffer[4 + data_length + 2] != 0x00:
-                        print("Data frame POSTAMBLE error.")
-                        data_position = 0
-                        data_buffer.clear()
-                        continue
-                    # Process complete frame
-                    data_response = bytes(data_buffer[5 : 5 + data_length])
-                    if data_response[0] != self.data_tfi_receive:
-                        # print("Data frame TFI error.")
-                        data_position = 0
-                        data_buffer.clear()
-                        continue
-
-                    if len(data_response) < 2:
-                        print("Data frame length error.")
-                        data_position = 0
-                        data_buffer.clear()
-                        continue
-                    # get cmd
-                    data_cmd = data_response[1] - 1
-                    if data_cmd in self.wait_response_map:
-                        if DEBUG:
-                            print(f"<=   {CY}{data_buffer.hex().upper()}{C0}")
-                        # update wait_response_map
-                        response = Response(data_cmd, Status.SUCCESS, data_response[2:])
-                        if (
-                            data_cmd == Command.InCommunicateThru or data_cmd == Command.InDataExchange
-                            and len(data_response) > 2
+                            if DEBUG:
+                                print(f"Data frame no preamble byte: {data_buffer[0]:02x}")
+                            preamble_pos = -1
+                            for i in range(len(data_buffer)):
+                                if data_buffer[i] == self.data_preamble[0]:
+                                    preamble_pos = i
+                                    break
+                            if preamble_pos > 0:
+                                data_buffer = data_buffer[preamble_pos:]
+                                data_position = 0
+                                continue
+                            else:
+                                clear_buffer()
+                                break
+                    elif data_position == 1:
+                        if data_buffer[1] != self.data_start_code[0]:
+                            if DEBUG:
+                                print(f"Data frame start code error at position 1: {data_buffer[1]:02x}")
+                            clear_buffer()
+                            break
+                    elif data_position == 2:
+                        if data_buffer[2] != self.data_start_code[1]:
+                            if DEBUG:
+                                print(f"Data frame start code error at position 2: {data_buffer[2]:02x}")
+                            clear_buffer()
+                            break
+                    elif data_position == 3:
+                        data_length = data_buffer[3]  # Get the data length byte
+                    elif data_position == 4:
+                        # Check length checksum (LCS)
+                        length_checksum = data_buffer[4]
+                        if (data_length + length_checksum) & 0xFF != 0:
+                            if DEBUG:
+                                print(f"Data frame LCS error: len={data_length:02x} lcs={length_checksum:02x}")
+                            clear_buffer()
+                            break
+                        # print("length checksum ok")
+                    elif data_position == 5 + data_length:
+                        # Check DCS (Data Checksum)
+                        if data_buffer[5 + data_length] != self.dcs(
+                            data_buffer[5 : 5 + data_length]
                         ):
-                            response = Response(
-                                data_cmd, data_response[2], data_response[2:]
-                            )
-                            if data_response[2] == 0 and len(data_response) > 16:
-                                response = Response(
-                                    data_cmd,
-                                    data_response[2],
-                                    data_response[3: data_length],
-                                )
-                        self.wait_response_map[data_cmd]["response"] = response
-                        fn_call = self.wait_response_map[data_cmd].get("callback")
-                        if callable(fn_call):
-                            print("run callback")
-                            del self.wait_response_map[data_cmd]
-                            fn_call(data_cmd, data_status, data_response)
-                    else:
+                            if DEBUG:
+                                print("Data frame DCS error.")
+                            clear_buffer()
+                            break
+                        # print("data checksum ok")
+                    elif data_position == 6 + data_length:
+                        # Check POSTAMBLE
+                        if data_buffer[6 + data_length] != 0x00:
+                            if DEBUG:
+                                print("Data frame POSTAMBLE error.")
+                            clear_buffer()
+                            break
+                        # Process complete frame
+                        data_response = bytes(data_buffer[5 : 5 + data_length])
+                        if len(data_response) == 0:
+                            if DEBUG:
+                                print("Data frame is empty.")
+                            clear_buffer()
+                            break
+                        if data_response[0] != self.data_tfi_receive:
+                            if DEBUG:
+                                print("Data frame TFI error.")
+                            clear_buffer()
+                            break
+
+                        if len(data_response) < 2:
+                            if DEBUG:
+                                print("Data frame length error.")
+                            clear_buffer()
+                            break
+                        # get cmd
+                        data_cmd = data_response[1] - 1
                         if DEBUG:
-                            print(f"No task waiting for process: {data_cmd}")
-                        pass
-                    data_position = 0
-                    data_buffer.clear()
-                    continue
-                data_position += 1
+                            print(f"Parsed command: {data_cmd}, waiting for: {list(self.wait_response_map.keys())}")
+                        if data_cmd in self.wait_response_map:
+                            if DEBUG:
+                                print(f"<=   {CY}{data_buffer[:7+data_length].hex().upper()}{C0}")
+                            # update wait_response_map
+                            response = Response(data_cmd, Status.SUCCESS, data_response[2:])
+                            if (
+                                data_cmd == Command.InCommunicateThru or data_cmd == Command.InDataExchange
+                                and len(data_response) > 2
+                            ):
+                                response = Response(
+                                    data_cmd, data_response[2], data_response[2:]
+                                )
+                                if data_response[2] == 0 and len(data_response) > 16:
+                                    response = Response(
+                                        data_cmd,
+                                        data_response[2],
+                                        data_response[3: 3 + data_length - 3],  # 修复数据长度计算
+                                    )
+                            self.wait_response_map[data_cmd]["response"] = response
+                            fn_call = self.wait_response_map[data_cmd].get("callback")
+                            if callable(fn_call):
+                                print("run callback")
+                                del self.wait_response_map[data_cmd]
+                                fn_call(data_cmd, data_status, data_response)
+                        else:
+                            if DEBUG:
+                                print(f"No task waiting for process: {data_cmd}")
+                            pass
+                        clear_buffer()
+                        break
+                    
+                    data_position += 1
 
     def thread_data_transfer(self):
         while self.isOpen():
@@ -348,12 +403,12 @@ class Pn532Com:
             self.wait_response_map[task_cmd]["end_time"] = start_time + task_timeout
             self.wait_response_map[task_cmd]["is_timeout"] = False
             try:
-                assert self.serial_instance is not None
+                assert self.communication is not None
                 if DEBUG:
                     print(f'=>   {CY}{task["frame"].hex().upper()}{C0}')
-                self.serial_instance.write(task["frame"])
+                self.communication.write(task["frame"])
             except Exception as e:
-                print(f"Serial Error {e}, thread for transfer exit.")
+                print(f"Communication Error {e}, thread for transfer exit.")
                 self.close()
                 break
 
