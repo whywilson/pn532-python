@@ -88,8 +88,9 @@ class Pn532Com:
             threading.Thread(target=self.thread_data_transfer).start()
             threading.Thread(target=self.thread_check_timeout).start()
             
+            time.sleep(0.5)
             self.set_normal_mode()
-            time.sleep(0.01)
+            time.sleep(0.5)
             is_pn532killer = self.is_pn532killer()
             if is_pn532killer:
                 self.device_name = "PN532Killer"
