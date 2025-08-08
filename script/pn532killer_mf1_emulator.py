@@ -13,7 +13,7 @@ from pn532_enum import Pn532KillerCommand
 from pn532_cmd import Pn532CMD
 
 from pn532_enum import ButtonPressFunction, ButtonType, MifareClassicDarksideStatus
-from pn532_enum import MfcKeyType, MfcValueBlockOperator
+from pn532_enum import PN532KillerMode, PN532KillerTagType
 from time import sleep
 from pn532_utils import CC, CB, CG, C0, CY, CR
 import os
@@ -113,7 +113,7 @@ def test_fn():
         print("Block0 set to " + block0.hex() + " on Mifare Classic Emulator Slot 0")
         cml.upload_data_block(type  = 1, slot= 0, index = 0, data = block0)
         cml.upload_data_block_done(slot = 0)
-        cml.device.set_work_mode(2, 1, 0)
+        cml.device.set_work_mode(PN532KillerMode.EMULATOR, PN532KillerTagType.MFC, 0)
 
         delay_time = 10
         if "-d" in sys.argv:

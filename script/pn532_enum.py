@@ -58,6 +58,7 @@ PN532Capabilities = [
     "HfMfCview",
     "HfMfDump",
     "HfMfWipe",
+    "HfMfRestore",
     "NtagEmulate",
     "NtagReader",
     "HfMfuRdbl",
@@ -65,6 +66,7 @@ PN532Capabilities = [
     "HfMfuDump",
     "Hf14aGen4Pwd",
     "HfMfuSetUid",
+    "HfMfuEread",
 ]
 PN532KillerCapabilities = [
     "HWModeReader",
@@ -487,6 +489,39 @@ class MfcKeyType(enum.IntEnum):
     A = 0x60
     B = 0x61
 
+
+@enum.unique
+class PN532KillerMode(enum.IntEnum):
+    READER = 1
+    EMULATOR = 2
+    SNIFFER = 3
+
+    def __str__(self):
+        if self == PN532KillerMode.READER:
+            return "Reader"
+        elif self == PN532KillerMode.EMULATOR:
+            return "Emulator"
+        elif self == PN532KillerMode.SNIFFER:
+            return "Sniffer"
+        return "Unknown"
+
+@enum.unique
+class PN532KillerTagType(enum.IntEnum):
+    MFC = 1
+    MFU = 2
+    EM4100 = 3
+    ISO15693 = 4
+
+    def __str__(self):
+        if self == PN532KillerTagType.MFC:
+            return "Mifare Classic"
+        elif self == PN532KillerTagType.MFU:
+            return "Mifare Ultralight"
+        elif self == PN532KillerTagType.EM4100:
+            return "EM4100"
+        elif self == PN532KillerTagType.ISO15693:
+            return "ISO15693"
+        return "Unknown"
 
 @enum.unique
 class ButtonPressFunction(enum.IntEnum):

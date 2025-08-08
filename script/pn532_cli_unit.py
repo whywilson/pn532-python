@@ -20,7 +20,7 @@ from typing import Union
 from pathlib import Path
 from platform import uname
 from datetime import datetime
-from pn532_enum import MfcKeyType, MifareCommand
+from pn532_enum import MfcKeyType, MifareCommand, PN532KillerMode, PN532KillerTagType
 
 from pn532_utils import CLITree
 
@@ -287,12 +287,12 @@ class HWModeReader(DeviceRequiredUnit):
 
     def on_exec(self, args: argparse.Namespace):
         self.device_com.set_work_mode()
-        print("Switch to {  Tag Reader  } mode successfully.")
+        print("Switch to {  Reader  } mode successfully.")
 
 
 @hw_mode.command("e")
 class HWModeEmulator(DeviceRequiredUnit):
-    # support -type m14b1k, 15693, em4100 and -slot 1-8
+    # support -type Mifare Classic, MIFARE Ultralight, 15693, EM4100 and -slot 1-8
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Set device to emulator mode"
@@ -302,7 +302,7 @@ class HWModeEmulator(DeviceRequiredUnit):
             default=1,
             type=int,
             required=False,
-            help="1 - 4B1K, 3 - 15693, 4 - EM4100",
+            help="1 - MFC, 2 - MFU, 3 - 15693, 4 - EM4100",
         )
         parser.add_argument(
             "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
@@ -312,7 +312,7 @@ class HWModeEmulator(DeviceRequiredUnit):
     def on_exec(self, args: argparse.Namespace):
         type = args.type
         slot = args.slot
-        self.device_com.set_work_mode(2, type, slot - 1)
+        self.device_com.set_work_mode(PN532KillerMode.EMULATOR, type, slot - 1)
         print("Switch to {  Emulator  } mode successfully.")
 
 
@@ -333,7 +333,7 @@ class HWModeSniffer(DeviceRequiredUnit):
         return parser
 
     def on_exec(self, args: argparse.Namespace):
-        self.device_com.set_work_mode(3, 1, args.type)
+        self.device_com.set_work_mode(PN532KillerMode.SNIFFER, PN532KillerTagType.MFC, args.type)
         print("Switch to {  Sniffer  } mode successfully.")
 
 
@@ -1858,6 +1858,177 @@ class HfMfWipe(DeviceRequiredUnit):
         else:
             print(f"{CR}Not MiFare Classic{C0}")
 
+@hf_mf.command("restore")
+class HfMfRestore(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.formatter_class = argparse.RawDescriptionHelpFormatter
+        parser.description = "Restore Mifare Classic card from dump file"
+        parser.add_argument(
+            "-f",
+            metavar="<file>",
+            type=str,
+            required=False,
+            help="Mifare dump file (mfd or bin)",
+        )
+        parser.add_argument(
+            "-g",
+            type=int,
+            metavar="<dec>",
+            required=False,
+            default=0,
+            help="Generation: 0 => Normal (Default), 1 => Gen1A, 2 => Gen2, 3 => Gen3, 4 => Gen4",
+        )
+        return parser
+
+    def sak_info(self, data_tag):
+        int_sak = data_tag["sak"][0]
+        if int_sak in type_id_SAK_dict:
+            print(f"- Guessed type(s) from SAK: {type_id_SAK_dict[int_sak]}")
+
+    def on_exec(self, args: argparse.Namespace):
+        if not args.f:
+            print("usage: hf mf restore [-h] -f <file> [-g <dec>]")
+            print("hf mf restore: error: the following arguments are required: -f")
+            return
+        dump_data = {}
+        if args.f.endswith('.mfd'):
+            with open(args.f, 'r') as f:
+                for line in f:
+                    if ':' in line:
+                        block_num, data = line.strip().split(':')
+                        dump_data[int(block_num)] = data.strip()
+        elif args.f.endswith('.bin'):
+            with open(args.f, 'rb') as f:
+                data = f.read()
+                if len(data) != 1024:  # 1KB
+                    print(f"{CR}Error: Bin file must be 1KB{C0}")
+                    return
+                for i in range(64):  # 64 blocks
+                    dump_data[i] = data[i*16:(i+1)*16].hex()
+        else:
+            print(f"{CR}Error: Unsupported file format{C0}")
+            return
+
+        # 扫描卡片
+        resp = self.cmd.hf_14a_scan()
+        if resp is None:
+            print("No tag found")
+            return
+
+        self.sak_info(resp[0])
+        uid = resp[0]["uid"]
+
+        gen = args.g
+        if gen == 1:  # Gen1A
+            if not self.cmd.isGen1a():
+                print(f"{CR}Tag is not Gen1A{C0}")
+                return
+            print("Found Gen1A:", f"{uid.hex().upper()}")
+            for block, block_data in dump_data.items():
+                options = {
+                    "activate_rf_field": 0,
+                    "wait_response": 1,
+                    "append_crc": 1,
+                    "auto_select": 0,
+                    "keep_rf_field": 1,
+                    "check_response_crc": 0,
+                }
+                resp = self.cmd.hf14a_raw(
+                    options=options,
+                    resp_timeout_ms=1000,
+                    data=[MifareCommand.MfWriteBlock, block],
+                )
+                options["keep_rf_field"] = 0
+                resp = self.cmd.hf14a_raw(
+                    options=options,
+                    resp_timeout_ms=1000,
+                    data=bytes.fromhex(block_data),
+                )
+                if resp and len(resp) > 0 and resp[0] == 0x00:
+                    print(f"Write block {block}: {CG}Success{C0}")
+                else:
+                    print(f"Write block {block}: {CR}Failed{C0}")
+
+        elif gen == 2:  # Gen2
+            for block, block_data in dump_data.items():
+                resp = self.cmd.mf1_write_block(
+                    uid,
+                    block,
+                    bytes.fromhex("ffffffffffff"),
+                    bytes.fromhex(block_data),
+                )
+                if resp:
+                    print(f"Write block {block}: {CG}Success{C0}")
+                else:
+                    print(f"Write block {block}: {CR}Failed{C0}")
+
+        elif gen == 3:  # Gen3
+            if not self.cmd.isGen3():
+                print(f"{CR}Tag is not Gen3{C0}")
+                return
+            print("Found Gen3 Tag")
+            # Set UID
+            resp1 = self.cmd.setGen3Uid(uid)
+            print(f"Set UID to {uid.hex().upper()}: {CG}Success{C0}" if resp1 else f"Set UID to {uid.hex().upper()}: {CR}Failed{C0}")
+            # Set Block0
+            resp2 = self.cmd.setGen3Block0(bytes.fromhex(dump_data[0]))
+            print(f"Set block0: {CG}Success{C0}" if resp2 else f"Set block0: {CR}Failed{C0}")
+            # Write other blocks
+            for block, block_data in dump_data.items():
+                if block == 0:
+                    continue
+                resp = self.cmd.mf1_write_block(
+                    uid,
+                    block,
+                    bytes.fromhex("ffffffffffff"),
+                    bytes.fromhex(block_data),
+                )
+                if resp:
+                    print(f"Write block {block}: {CG}Success{C0}")
+                else:
+                    print(f"Write block {block}: {CR}Failed{C0}")
+
+        elif gen == 4:  # Gen4
+            if not self.cmd.isGen4("00000000"):
+                print(f"{CR}Tag is not Gen4{C0}")
+                return
+            print("Found Gen4:", f"{uid.hex().upper()}")
+            for block, block_data in dump_data.items():
+                options = {
+                    "activate_rf_field": 0,
+                    "wait_response": 1,
+                    "append_crc": 1,
+                    "auto_select": 0,
+                    "keep_rf_field": 1,
+                    "check_response_crc": 0,
+                }
+                resp = self.cmd.hf14a_raw(
+                    options=options,
+                    resp_timeout_ms=1000,
+                    data=bytes.fromhex(f"CF00000000CD{block:02x}{block_data}"),
+                )
+                if resp and len(resp) > 0 and resp[0] == 0x00:
+                    print(f"Write block {block}: {CG}Success{C0}")
+                else:
+                    print(f"Write block {block}: {CR}Failed{C0}")
+
+        else:  # Normal card
+            for block, block_data in dump_data.items():
+                if block == 0:
+                    print(f"{CR}Skip Block 0.{C0}")
+                    continue
+                resp = self.cmd.mf1_write_block(
+                    uid,
+                    block,
+                    bytes.fromhex("ffffffffffff"),
+                    bytes.fromhex(block_data),
+                )
+                if resp:
+                    print(f"Write block {block}: {CG}Success{C0}")
+                else:
+                    print(f"Write block {block}: {CR}Failed{C0}")
+
 @hf_mf.command("eSetUid")
 class HfMfESetUid(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -1955,7 +2126,7 @@ class HfMfEread(DeviceRequiredUnit):
         return parser
 
     def on_exec(self, args: argparse.Namespace):
-        self.device_com.set_work_mode(2, 0x01, args.slot - 1)
+        self.device_com.set_work_mode(PN532KillerMode.EMULATOR, PN532KillerTagType.MFC, args.slot - 1)
         dump_map = self.cmd.hf_mf_eread(args.slot)
         # {"0": "11223344556677889900AABBCCDDEEFF", "1": "11223344556677889900AABBCCDDEEFF", ...}
         if not dump_map:
@@ -2238,6 +2409,53 @@ examples:
             else:
                 print("Failed to read original Block0")
 
+@hf_mfu.command("eRead")
+class HfMfuEread(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Get Mifare Ultralight dump from PN532Killer Slot"
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        parser.add_argument("--file", action="store_true", help="Save to json file")
+        parser.add_argument("--bin", action="store_true", help="Save to bin file")
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        self.device_com.set_work_mode(PN532KillerMode.EMULATOR, PN532KillerTagType.MFU, args.slot - 1)
+        dump_map = self.cmd.hf_mfu_eread(args.slot)
+        # {"0": "11223344", "1": "55667788", ...}
+        if not dump_map:
+            print("Get dump failed")
+            return
+        file_name = f"mfu_dump_{args.slot}"
+        file_index = 0
+        if args.file:
+            while True:
+                if os.path.exists(f"{file_name}_{file_index}.json"):
+                    file_index += 1
+                else:
+                    file_name = f"{file_name}_{file_index}.json"
+                    break
+            # Convert bytes to hex strings for JSON serialization
+            json_dump_map = {}
+            for page_index, page_data in dump_map.items():
+                json_dump_map[str(page_index)] = page_data.hex().upper()
+            with open(file_name, "w") as json_file:
+                json.dump({"pages": json_dump_map}, json_file)
+        if args.bin:
+            file_name_bin = f"mfu_dump_{args.slot}"
+            file_index = 0
+            while True:
+                if os.path.exists(f"{file_name_bin}_{file_index}.bin"):
+                    file_index += 1
+                else:
+                    file_name_bin = f"{file_name_bin}_{file_index}.bin"
+                    break
+            with open(file_name_bin, "wb") as bin_file:
+                for page_index, page_data in dump_map.items():
+                    bin_file.write(page_data)
+
 @lf.command("scan")
 class LfScan(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -2322,3 +2540,139 @@ class NtagReader(DeviceRequiredUnit):
 
     def on_exec(self, args: argparse.Namespace):
         self.cmd.ntag_reader()
+        # Read dump file
+        dump_data = {}
+        if args.f.endswith('.mfd'):
+            with open(args.f, 'r') as f:
+                for line in f:
+                    if ':' in line:
+                        block_num, data = line.strip().split(':')
+                        dump_data[int(block_num)] = data.strip()
+        elif args.f.endswith('.bin'):
+            with open(args.f, 'rb') as f:
+                data = f.read()
+                if len(data) != 1024:  # 1KB
+                    print(f"{CR}Error: Bin file must be 1KB{C0}")
+                    return
+                for i in range(64):  # 64 blocks
+                    dump_data[i] = data[i*16:(i+1)*16].hex()
+        else:
+            print(f"{CR}Error: Unsupported file format{C0}")
+            return
+
+        resp = self.cmd.hf_14a_scan()
+        if resp is None:
+            print("No tag found")
+            return
+
+        self.sak_info(resp[0])
+        uid = resp[0]["uid"]
+        key = bytes.fromhex(args.k)
+
+        # Write tag depending on generation
+        gen = args.g
+        if gen == 1:  # Gen1A
+            if not self.cmd.isGen1a():
+                print(f"{CR}Tag is not Gen1A{C0}")
+                return
+            print("Found Gen1A:", f"{uid.hex().upper()}")
+            for block, block_data in dump_data.items():
+                options = {
+                    "activate_rf_field": 0,
+                    "wait_response": 1,
+                    "append_crc": 1,
+                    "auto_select": 0,
+                    "keep_rf_field": 1,
+                    "check_response_crc": 0,
+                }
+                resp = self.cmd.hf14a_raw(
+                    options=options,
+                    resp_timeout_ms=1000,
+                    data=[MifareCommand.MfWriteBlock, block],
+                )
+                options["keep_rf_field"] = 0
+                resp = self.cmd.hf14a_raw(
+                    options=options,
+                    resp_timeout_ms=1000,
+                    data=bytes.fromhex(block_data),
+                )
+                if resp and len(resp) > 0 and resp[0] == 0x00:
+                    print(f"Write block {block}: {CG}Success{C0}")
+                else:
+                    print(f"Write block {block}: {CR}Failed{C0}")
+
+        elif gen == 2:  # Gen2
+            for block, block_data in dump_data.items():
+                resp = self.cmd.mf1_write_block(
+                    uid,
+                    block,
+                    key,
+                    bytes.fromhex(block_data),
+                )
+                if resp:
+                    print(f"Write block {block}: {CG}Success{C0}")
+                else:
+                    print(f"Write block {block}: {CR}Failed{C0}")
+
+        elif gen == 3:  # Gen3
+            if not self.cmd.isGen3():
+                print(f"{CR}Tag is not Gen3{C0}")
+                return
+            print("Found Gen3 Tag")
+            # Set UI
+            resp1 = self.cmd.setGen3Uid(uid)
+            print(f"Set UID to {uid.hex().upper()}: {CG}Success{C0}" if resp1 else f"Set UID to {uid.hex().upper()}: {CR}Failed{C0}")
+            # Set block0
+            resp2 = self.cmd.setGen3Block0(bytes.fromhex(dump_data[0]))
+            print(f"Set block0: {CG}Success{C0}" if resp2 else f"Set block0: {CR}Failed{C0}")
+            # Write other blocks
+            for block, block_data in dump_data.items():
+                if block == 0:
+                    continue
+                resp = self.cmd.mf1_write_block(
+                    uid,
+                    block,
+                    key,
+                    bytes.fromhex(block_data),
+                )
+                if resp:
+                    print(f"Write block {block}: {CG}Success{C0}")
+                else:
+                    print(f"Write block {block}: {CR}Failed{C0}")
+
+        elif gen == 4:  # Gen4
+            if not self.cmd.isGen4(args.p):
+                print(f"{CR}Tag is not Gen4 or wrong password{C0}")
+                return
+            print("Found Gen4:", f"{uid.hex().upper()}")
+            for block, block_data in dump_data.items():
+                options = {
+                    "activate_rf_field": 0,
+                    "wait_response": 1,
+                    "append_crc": 1,
+                    "auto_select": 0,
+                    "keep_rf_field": 1,
+                    "check_response_crc": 0,
+                }
+                resp = self.cmd.hf14a_raw(
+                    options=options,
+                    resp_timeout_ms=1000,
+                    data=bytes.fromhex(f"CF{args.p}CD{block:02x}{block_data}"),
+                )
+                if resp and len(resp) > 0 and resp[0] == 0x00:
+                    print(f"Write block {block}: {CG}Success{C0}")
+                else:
+                    print(f"Write block {block}: {CR}Failed{C0}")
+
+        else:  # Normal card
+            for block, block_data in dump_data.items():
+                resp = self.cmd.mf1_write_block(
+                    uid,
+                    block,
+                    key,
+                    bytes.fromhex(block_data),
+                )
+                if resp:
+                    print(f"Write block {block}: {CG}Success{C0}")
+                else:
+                    print(f"Write block {block}: {CR}Failed{C0}")
