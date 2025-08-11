@@ -7,11 +7,12 @@ import sys
 def test_fn():
     dev = pn532_com.Pn532Com()
     try:
-        dev.open("/dev/tty.wchusbserial210")
+        port_name = "/dev/tty.wchusbserial210"
+        dev.open(port_name)
         if not dev.isOpen():
-            print("Failed to connect to /dev/tty.wchusbserial210")
+            print(f"Failed to connect to {port_name}")
             return
-        print(f"Connected to /dev/tty.wchusbserial210")
+        print(f"Connected to {port_name}")
         cml = Pn532CMD(dev)
     except Exception as e:
         print(f"Connection failed: {e}")

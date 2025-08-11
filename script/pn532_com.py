@@ -44,6 +44,8 @@ class Pn532Com:
         self.send_data_queue = queue.Queue()
         self.wait_response_map = {}
         self.event_closing = threading.Event()
+        self.port_string = None  # store original open string
+        self.ignore_late_cmd_until = {}  # 记录某命令在这个时间点前的迟到帧直接丢弃
 
     device_name = "Unknown"
     data_max_length = 0xFF
@@ -56,41 +58,42 @@ class Pn532Com:
 
     def isOpen(self) -> bool:
         return self.communication is not None and self.communication.is_open()
+    
+    def get_connection_info(self) -> str:
+        """Get connection information"""
+        if self.communication is not None:
+            return self.communication.get_connection_info()
+        return "Not connected"
 
     def open(self, port) -> "Pn532Com":
         if not self.isOpen():
             error = None
             try:
-                # 创建通信接口
                 self.communication = CommunicationFactory.create_communication(port)
                 protocol_type, actual_address = CommunicationFactory.parse_address(port)
-                
-                # 打开连接
+                self.connection_type = protocol_type  # 记录连接类型
                 if not self.communication.open(actual_address):
                     raise Exception(f"Failed to open {protocol_type} connection to {actual_address}")
-                
                 print(f"Opened {protocol_type} connection to {actual_address}")
+                self.port_string = port
             except Exception as e:
                 error = e
             finally:
                 if error is not None:
                     raise OpenFailException(error)
-            
             assert self.communication is not None
-            self.communication.set_timeout(THREAD_BLOCKING_TIMEOUT)
-            
+            self.communication.set_timeout(0.3 if hasattr(self, 'connection_type') and self.connection_type in ('udp','tcp') else THREAD_BLOCKING_TIMEOUT)
             # clear variable
             self.send_data_queue.queue.clear()
             self.wait_response_map.clear()
             # Start a sub thread to process data
             self.event_closing.clear()
-            threading.Thread(target=self.thread_data_receive).start()
-            threading.Thread(target=self.thread_data_transfer).start()
-            threading.Thread(target=self.thread_check_timeout).start()
+            threading.Thread(target=self.thread_data_receive, daemon=True).start()
+            threading.Thread(target=self.thread_data_transfer, daemon=True).start()
+            threading.Thread(target=self.thread_check_timeout, daemon=True).start()
             
-            time.sleep(0.5)
             self.set_normal_mode()
-            time.sleep(0.5)
+            time.sleep(0.01)
             is_pn532killer = self.is_pn532killer()
             if is_pn532killer:
                 self.device_name = "PN532Killer"
@@ -119,7 +122,6 @@ class Pn532Com:
 
     def set_normal_mode(self) -> response:
         self.communication.write(bytes.fromhex("5500000000000000000000000000"))
-        time.sleep(0.1)
         response = self.send_cmd_sync(Command.SAMConfiguration, bytes.fromhex("01"))
         return response
 
@@ -138,6 +140,32 @@ class Pn532Com:
         cmd = data[0]
         response = self.send_cmd_sync(cmd, data[1:])
         return response.data
+
+    def send_raw_frame(self, frame: bytes, wait_response: bool = True):
+        # Send a full PN532 frame (already contains preamble/startcode/len/LCS/DCS/postamble or any wakeup sequence)
+        if not self.isOpen():
+            raise NotOpenException("Device not open")
+        assert self.communication is not None
+        if DEBUG:
+            print(f'=>   {CY}{frame.hex().upper()}{C0}')
+        self.communication.write(frame)
+        
+        if not wait_response:
+            return None
+            
+        # For non-command frames (like wakeup), don't wait for structured response
+        if not frame.startswith(b'\x00\x00\xFF'):
+            return None
+            
+        # Wait for response with simple timeout
+        import time
+        start_time = time.time()
+        while time.time() - start_time < 2.0:  # 2 second timeout
+            time.sleep(0.01)
+            # Check if any response came in the normal flow
+            # This is a simple implementation - for debugging mostly
+        
+        return None
 
     def reset_register(self) -> response:
         response = self.send_cmd_sync(
@@ -189,211 +217,150 @@ class Pn532Com:
         return crc.to_bytes(2, byteorder="little")
 
     def thread_data_receive(self):
+        """Receiver thread: robust frame extraction with resync & ACK filtering"""
         data_buffer = bytearray()
-        data_position = 0
-        data_cmd = 0x0000
-        data_status = 0x0000
-        data_length = 0x0000
-        skip_pattern = bytearray.fromhex("0000ff00ff00")
-        skip_pattern_length = len(skip_pattern)
-
-        def reset_frame_parsing():
-            nonlocal data_position
-            data_position = 0
-
-        def clear_buffer():
-            nonlocal data_buffer, data_position, data_length
-            data_buffer.clear()
-            data_position = 0
-            data_length = 0x0000
-
-        def check_for_ack_frame():
-            nonlocal data_buffer
-            if len(data_buffer) >= skip_pattern_length:
-                if data_buffer[:skip_pattern_length] == skip_pattern:
-                    data_buffer = data_buffer[skip_pattern_length:]
-                    return True
-                if data_buffer[-skip_pattern_length:] == skip_pattern:
-                    data_buffer = data_buffer[:-skip_pattern_length]
-                    return True
-            return False
-
+        ACK = b"\x00\x00\xFF\x00\xFF\x00"
         while self.isOpen():
+            # 连接状态检测
+            if self.communication is not None and not self.communication.is_open():
+                if not self.event_closing.is_set():
+                    print("Connection lost, closing device...")
+                self.close()
+                break
             try:
                 assert self.communication is not None
-                data_bytes = self.communication.read(32) 
+                chunk = self.communication.read(64)
+                # UDP 的多包读取已在 communication 层处理，这里去掉额外逻辑
             except Exception as e:
                 if not self.event_closing.is_set():
                     print(f"Communication Error {e}, thread for receiver exit.")
                 self.close()
                 break
-
-            if len(data_bytes) > 0:
-                data_buffer.extend(data_bytes)
-                
-                while len(data_buffer) > 0:
-                    if check_for_ack_frame():
-                        reset_frame_parsing()
-                        continue
-
-                    if len(data_buffer) > 300: 
-                        clear_buffer()
-                        break
-
-                    if data_position == 0 and len(data_buffer) < 1:
-                        break
-                    elif data_position == 1 and len(data_buffer) < 2:
-                        break
-                    elif data_position == 2 and len(data_buffer) < 3:
-                        break
-                    elif data_position == 3 and len(data_buffer) < 4:
-                        break
-                    elif data_position == 4 and len(data_buffer) < 5:
-                        break
-                    elif data_position >= 5 and len(data_buffer) < 6 + data_length:
-                        break
-
-                    if data_position == 0:
-                        if data_buffer[0] != self.data_preamble[0]:
-                            preamble_pos = -1
-                            for i in range(len(data_buffer)):
-                                if data_buffer[i] == self.data_preamble[0]:
-                                    preamble_pos = i
-                                    break
-                            if preamble_pos > 0:
-                                data_buffer = data_buffer[preamble_pos:]
-                                data_position = 0
-                                continue
-                            else:
-                                clear_buffer()
-                                break
-                    elif data_position == 1:
-                        if data_buffer[1] != self.data_start_code[0]:
-                            clear_buffer()
-                            break
-                    elif data_position == 2:
-                        if data_buffer[2] != self.data_start_code[1]:
-                            if DEBUG:
-                                print(f"Data frame start code error at position 2: {data_buffer[2]:02x}")
-                            clear_buffer()
-                            break
-                    elif data_position == 3:
-                        data_length = data_buffer[3]  # Get the data length byte
-                    elif data_position == 4:
-                        # Check length checksum (LCS)
-                        length_checksum = data_buffer[4]
-                        if (data_length + length_checksum) & 0xFF != 0:
-                            if DEBUG:
-                                print(f"Data frame LCS error: len={data_length:02x} lcs={length_checksum:02x}")
-                            clear_buffer()
-                            break
-                        # print("length checksum ok")
-                    elif data_position == 5 + data_length:
-                        # Check DCS (Data Checksum)
-                        if data_buffer[5 + data_length] != self.dcs(
-                            data_buffer[5 : 5 + data_length]
-                        ):
-                            if DEBUG:
-                                print("Data frame DCS error.")
-                            clear_buffer()
-                            break
-                        # print("data checksum ok")
-                    elif data_position == 6 + data_length:
-                        # Check POSTAMBLE
-                        if data_buffer[6 + data_length] != 0x00:
-                            if DEBUG:
-                                print("Data frame POSTAMBLE error.")
-                            clear_buffer()
-                            break
-                        # Process complete frame
-                        data_response = bytes(data_buffer[5 : 5 + data_length])
-                        if len(data_response) == 0:
-                            if DEBUG:
-                                print("Data frame is empty.")
-                            clear_buffer()
-                            break
-                        if data_response[0] != self.data_tfi_receive:
-                            if DEBUG:
-                                print("Data frame TFI error.")
-                            clear_buffer()
-                            break
-
-                        if len(data_response) < 2:
-                            if DEBUG:
-                                print("Data frame length error.")
-                            clear_buffer()
-                            break
-                        # get cmd
-                        data_cmd = data_response[1] - 1
-                        if DEBUG:
-                            print(f"Parsed command: {data_cmd}, waiting for: {list(self.wait_response_map.keys())}")
-                        if data_cmd in self.wait_response_map:
-                            if DEBUG:
-                                print(f"<=   {CY}{data_buffer[:7+data_length].hex().upper()}{C0}")
-                            # update wait_response_map
-                            response = Response(data_cmd, Status.SUCCESS, data_response[2:])
-                            if (
-                                data_cmd == Command.InCommunicateThru or data_cmd == Command.InDataExchange
-                                and len(data_response) > 2
-                            ):
-                                response = Response(
-                                    data_cmd, data_response[2], data_response[2:]
-                                )
-                                if data_response[2] == 0 and len(data_response) > 16:
-                                    response = Response(
-                                        data_cmd,
-                                        data_response[2],
-                                        data_response[3: 3 + data_length - 3],  # 修复数据长度计算
-                                    )
-                            self.wait_response_map[data_cmd]["response"] = response
-                            fn_call = self.wait_response_map[data_cmd].get("callback")
-                            if callable(fn_call):
-                                print("run callback")
-                                del self.wait_response_map[data_cmd]
-                                fn_call(data_cmd, data_status, data_response)
-                        else:
-                            if DEBUG:
-                                print(f"No task waiting for process: {data_cmd}")
-                            pass
-                        clear_buffer()
-                        break
-                    
-                    data_position += 1
-
+            if not chunk:
+                continue
+            if DEBUG:
+                print(f"READ {chunk.hex().upper()}")
+            data_buffer.extend(chunk)
+            # 过滤所有 ACK
+            changed = True
+            while changed:
+                changed = False
+                pos = data_buffer.find(ACK)
+                if pos != -1:
+                    if DEBUG:
+                        print(f"SKIP ACK at {pos}")
+                    del data_buffer[pos:pos+len(ACK)]
+                    changed = True
+            # 尝试解析帧
+            i = 0
+            while i <= len(data_buffer) - 7:  # 最小帧长度
+                # 寻找前导 00 00 FF
+                if not (data_buffer[i] == 0x00 and data_buffer[i+1] == 0x00 and data_buffer[i+2] == 0xFF):
+                    i += 1
+                    continue
+                if i + 5 > len(data_buffer):
+                    break  # 不足以读取 LEN/LCS
+                length = data_buffer[i+3]
+                lcs = data_buffer[i+4]
+                if ((length + lcs) & 0xFF) != 0:
+                    if DEBUG:
+                        print(f"LEN/LCS mismatch at {i}: LEN={length:02X} LCS={lcs:02X}")
+                    i += 1
+                    continue
+                frame_end = i + 5 + length + 2  # +DCS +POSTAMBLE
+                if frame_end > len(data_buffer):
+                    break  # 等待更多数据
+                if data_buffer[frame_end-1] != 0x00:
+                    if DEBUG:
+                        print(f"POSTAMBLE error at {i}")
+                    i += 1
+                    continue
+                data = bytes(data_buffer[i+5:i+5+length])
+                dcs = data_buffer[i+5+length]
+                if self.dcs(bytearray(data)) != dcs:
+                    if DEBUG:
+                        print(f"DCS error at {i}: expect {self.dcs(bytearray(data)):02X} got {dcs:02X}")
+                    i += 1
+                    continue
+                if not data:
+                    i = frame_end
+                    continue
+                tfi = data[0]
+                if tfi != self.data_tfi_receive:
+                    if DEBUG:
+                        print(f"Unexpected TFI {tfi:02X} (expect {self.data_tfi_receive:02X}), resync")
+                    i += 1
+                    continue
+                if len(data) < 2:
+                    i = frame_end
+                    continue
+                cmd_resp = data[1] - 1  # 原始命令
+                if cmd_resp in getattr(self, 'ignore_late_cmd_until', {}) and time.time() < self.ignore_late_cmd_until[cmd_resp]:
+                    if DEBUG:
+                        print(f"Discard late frame for CMD=0x{cmd_resp:02X}")
+                    i = frame_end
+                    continue
+                else:
+                    if cmd_resp in getattr(self, 'ignore_late_cmd_until', {}) and time.time() >= self.ignore_late_cmd_until[cmd_resp]:
+                        del self.ignore_late_cmd_until[cmd_resp]
+                if DEBUG:
+                    print(f"<=   {CY}{data_buffer[i:frame_end-1].hex().upper()}{C0}")
+                if cmd_resp in self.wait_response_map:
+                    payload = data[2:]
+                    response = Response(cmd_resp, Status.SUCCESS, payload)
+                    if (cmd_resp == Command.InCommunicateThru or cmd_resp == Command.InDataExchange) and len(data) > 2:
+                        status_byte = data[2]
+                        response = Response(cmd_resp, status_byte, data[2:])
+                        if status_byte == 0 and len(data) > 3:
+                            response = Response(cmd_resp, status_byte, data[3:])
+                    self.wait_response_map[cmd_resp]["response"] = response
+                    fn_call = self.wait_response_map[cmd_resp].get("callback")
+                    if callable(fn_call):
+                        del self.wait_response_map[cmd_resp]
+                        try:
+                            fn_call(cmd_resp, 0, data)
+                        except Exception as e:
+                            print(f"Callback error: {e}")
+                else:
+                    if DEBUG:
+                        print(f"No waiter for CMD=0x{cmd_resp:02X}, pending keys={[hex(k) for k in self.wait_response_map.keys()]}")
+                i = frame_end
+            if i > 0:
+                del data_buffer[:i]
     def thread_data_transfer(self):
         while self.isOpen():
-            # get a task from queue(if exists)
             try:
-                task = self.send_data_queue.get(
-                    block=True, timeout=THREAD_BLOCKING_TIMEOUT
-                )
+                task = self.send_data_queue.get(block=True, timeout=THREAD_BLOCKING_TIMEOUT)
             except queue.Empty:
                 continue
             task_cmd = task["cmd"]
             task_timeout = task["timeout"]
             task_close = task["close"]
-            # print("thread_data_transfer", task)
-            if "callback" in task and callable(task["callback"]):
-                self.wait_response_map[task_cmd] = {
-                    "callback": task["callback"]
-                }  # The callback for this task
-            else:
+            # 如果是预注册，占位里补齐时间字段；否则（极少出现）创建新项
+            if task_cmd not in self.wait_response_map:
+                # 不应发生（预注册保证存在），但兜底
                 self.wait_response_map[task_cmd] = {"response": None}
-            # set start time
+            if '_pre_registered' in self.wait_response_map[task_cmd]:
+                del self.wait_response_map[task_cmd]['_pre_registered']
+            if 'callback' in task and callable(task['callback']):
+                self.wait_response_map[task_cmd]['callback'] = task['callback']
             start_time = time.time()
             self.wait_response_map[task_cmd]["start_time"] = start_time
             self.wait_response_map[task_cmd]["end_time"] = start_time + task_timeout
             self.wait_response_map[task_cmd]["is_timeout"] = False
             try:
                 assert self.communication is not None
+                if not self.communication.is_open():
+                    print("Connection lost during data transfer, closing device...")
+                    self.close()
+                    break
                 if DEBUG:
-                    print(f'=>   {CY}{task["frame"].hex().upper()}{C0}')
+                    print(f"=>   {CY}{task['frame'].hex().upper()}{C0}")
                 self.communication.write(task["frame"])
             except Exception as e:
                 print(f"Communication Error {e}, thread for transfer exit.")
                 self.close()
                 break
-
             # update queue status
             self.send_data_queue.task_done()
             # disconnect if DFU command has been sent
@@ -402,16 +369,13 @@ class Pn532Com:
 
     def thread_check_timeout(self):
         while self.isOpen():
-            for task_cmd in self.wait_response_map.keys():
-                if time.time() > self.wait_response_map[task_cmd]["end_time"]:
-                    if "callback" in self.wait_response_map[task_cmd]:
-                        # not sync, call function to notify timeout.
-                        self.wait_response_map[task_cmd]["callback"](
-                            task_cmd, None, None
-                        )
+            for task_cmd in list(self.wait_response_map.keys()):  # 使用 list 避免迭代期间修改
+                task_data = self.wait_response_map.get(task_cmd, {})
+                if "end_time" in task_data and time.time() > task_data["end_time"]:
+                    if "callback" in task_data:
+                        task_data["callback"](task_cmd, None, None)
                     else:
-                        # sync mode, set timeout flag
-                        self.wait_response_map[task_cmd]["is_timeout"] = True
+                        task_data["is_timeout"] = True
             time.sleep(THREAD_BLOCKING_TIMEOUT)
 
     def make_data_frame_bytes(
@@ -457,14 +421,29 @@ class Pn532Com:
         :return:
         """
         self.check_open()
-        # delete old task
         if cmd in self.wait_response_map:
+            if DEBUG:
+                print(f"Replace pending task CMD=0x{cmd:02X}")
             del self.wait_response_map[cmd]
-        # make data frame
+        if hasattr(self, 'connection_type') and self.connection_type in ('tcp', 'udp'):
+            if timeout < 2:
+                timeout = 2
         data_frame = self.make_data_frame_bytes(cmd, data, status)
+        # 预注册占位，防止响应极快到达时无 waiter
+        self.wait_response_map[cmd] = self.wait_response_map.get(cmd, {})
+        if callable(callback):
+            self.wait_response_map[cmd]['callback'] = callback
+        if 'response' not in self.wait_response_map[cmd]:
+            self.wait_response_map[cmd]['response'] = None
+        self.wait_response_map[cmd]['_pre_registered'] = True
+        self.wait_response_map[cmd]['_timeout_value'] = timeout
+        if DEBUG:
+            print(f"PRE-REG CMD=0x{cmd:02X} TIMEOUT={timeout}s DATA={(data.hex().upper() if data else '')}")
         task = {"cmd": cmd, "frame": data_frame, "timeout": timeout, "close": close}
         if callable(callback):
             task["callback"] = callback
+        if DEBUG:
+            print(f"QUEUE CMD=0x{cmd:02X} TIMEOUT={timeout}s DATA={(data.hex().upper() if data else '')}")
         self.send_data_queue.put(task)
 
     def send_cmd_sync(
@@ -473,39 +452,73 @@ class Pn532Com:
         data: Union[bytes, None] = None,
         status: int = 0,
         timeout: int = 2,
+        retries: int = 0,  # 保留参数以兼容，已不再自动重发
     ) -> response:
-        if len(self.commands):
-            # check if PN532 can understand this command
-            if cmd not in self.commands:
-                raise CMDInvalidException(
-                    f"This device doesn't declare that it can support this command: {cmd}.\n"
-                    f"Make sure firmware is up to date and matches client"
-                )
-        # first to send cmd, no callback mode(sync)
-        self.send_cmd_auto(cmd, data, status, None, timeout)
-        # wait cmd start process
+        """
+        发送命令并同步等待响应（不再自动重发）。
+        :param cmd: 命令码
+        :param data: 数据
+        :param status: 状态
+        :param timeout: 超时时间（秒）
+        :param retries: 已废弃，保留做兼容（不再使用）
+        """
+        # 校验支持
+        if len(self.commands) and cmd not in self.commands:
+            raise CMDInvalidException(
+                f"This device doesn't declare that it can support this command: {cmd}.\n"
+                f"Make sure firmware is up to date and matches client"
+            )
+        network_mode = hasattr(self, 'connection_type') and self.connection_type in ('udp','tcp')
+        # 对扫描类命令直接提升任务自身 timeout (避免 timeout 线程过早置 is_timeout)
+        effective_timeout = timeout
+        if network_mode and cmd == Command.InListPassiveTarget and effective_timeout < 3:
+            effective_timeout = 3  # 给扫描至少 3s
+        # 其它命令给少量额外宽限（等待循环内部使用，不影响 timeout 线程判定）
+        wait_margin = 0.5 if not network_mode else 0.7
+        self.send_cmd_auto(cmd, data, status, None, effective_timeout)
+        start_wait = time.time()
+        # 等待任务注册
         while cmd not in self.wait_response_map:
+            if time.time() - start_wait > effective_timeout + wait_margin:
+                self.ignore_late_cmd_until[cmd] = time.time() + 0.3
+                return Response(cmd, Status.TimeoutError)
             time.sleep(0.01)
-        # wait response data set
+        # 等待响应
         while self.wait_response_map[cmd]["response"] is None:
-            if (
-                "is_timeout" in self.wait_response_map[cmd]
-                and self.wait_response_map[cmd]["is_timeout"]
-            ):
-                # raise TimeoutError(f"CMD {cmd} exec timeout")
-                # print(f"CMD {cmd} exec timeout")
-                self.wait_response_map[cmd]["is_timeout"] = True
-                self.wait_response_map[cmd]["response"] = Response(
-                    cmd, Status.TimeoutError
-                )
+            if ("is_timeout" in self.wait_response_map[cmd] and self.wait_response_map[cmd]["is_timeout"]):
+                self.ignore_late_cmd_until[cmd] = time.time() + 0.3
+                self.wait_response_map[cmd]["response"] = Response(cmd, Status.TimeoutError)
+                break
+            if time.time() - start_wait > effective_timeout + wait_margin:
+                self.ignore_late_cmd_until[cmd] = time.time() + 0.3
+                self.wait_response_map[cmd]["response"] = Response(cmd, Status.TimeoutError)
                 break
             time.sleep(0.01)
-        # ok, data received.
-        data_response = self.wait_response_map[cmd]["response"]
+        # 对 0x4A (InListPassiveTarget) 若收到空数据，继续等待直到超时或出现非空数据（不重发）
+        if cmd == Command.InListPassiveTarget:
+            while True:
+                resp_tmp = self.wait_response_map[cmd]["response"]
+                if resp_tmp is None:
+                    # 理论上不会出现，但兜底
+                    if time.time() - start_wait > effective_timeout + wait_margin:
+                        break
+                    time.sleep(0.01)
+                    continue
+                # 如果已经超时 / 非成功就直接退出
+                if resp_tmp.status != Status.SUCCESS:
+                    break
+                # 数据长度>=2 认为有效
+                if len(resp_tmp.data) >= 2:
+                    break
+                # 还未到时间，等待可能的覆盖（接收线程会覆盖 response）
+                if time.time() - start_wait > effective_timeout + wait_margin:
+                    break
+                time.sleep(0.02)
+        resp = self.wait_response_map[cmd]["response"]
         del self.wait_response_map[cmd]
-        if data_response.status == Status.INVALID_CMD:
+        if resp.status == Status.INVALID_CMD:
             raise CMDInvalidException(f"Device unsupported cmd: {cmd}")
-        return data_response
+        return resp
 
 
 class Response:

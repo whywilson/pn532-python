@@ -364,6 +364,12 @@ class HWRaw(DeviceRequiredUnit):
         if len(data) % 2 != 0:
             data = "0" + data
         data_bytes = bytes.fromhex(data)
+        # 如果用户输入的是完整帧 (以 0000FF 开头) 或 唤醒序列(55000...)，直接发送不封装
+        if data_bytes.startswith(b"\x00\x00\xFF") or data_bytes.startswith(b"\x55\x00"):
+            self.device_com.send_raw_frame(data_bytes)
+            print("Frame sent (raw, no wrapping)")
+            return
+        # 否则按命令格式: 第一个字节是cmd，其余是data
         resp = self.device_com.send_raw(data_bytes)
         print(f"Response: {' '.join(f'{byte:02X}' for byte in resp)}")
 
@@ -1950,19 +1956,19 @@ class HfMfRestore(DeviceRequiredUnit):
                 resp = self.cmd.hf14a_raw(
                     options=options,
                     resp_timeout_ms=1000,
-                    data=[MifareCommand.MfWriteBlock, block],
+                    data=[MifareCommand.MfWriteBlock, 0],
                 )
+                print(f"Writing block 0: {block0.hex().upper()}")
                 options["keep_rf_field"] = 0
                 resp = self.cmd.hf14a_raw(
                     options=options,
                     resp_timeout_ms=1000,
-                    data=bytes.fromhex(block_data),
+                    data=block0,
                 )
-                if resp and len(resp) > 0 and resp[0] == 0x00:
-                    print(f"Write block {block}: {CG}Success{C0}")
+                if resp.length > 0 and resp[0] == 0x00:
+                    print(f"Write {block_data} to block {block}: {CG}Success{C0}")
                 else:
-                    print(f"Write block {block}: {CR}Failed{C0}")
-
+                    print(f"Write failed on block {block}")
         elif gen == 2:  # Gen2
             for block, block_data in dump_data.items():
                 resp = self.cmd.mf1_write_block(
@@ -2126,49 +2132,8 @@ class HfMfEload(DeviceRequiredUnit):
         self.cmd.hf_mf_load(dump_map, args.slot)
 
 
-@hf_mf.command("eRead")
-class HfMfEread(DeviceRequiredUnit):
-    def args_parser(self) -> ArgumentParserNoExit:
-        parser = ArgumentParserNoExit()
-        parser.description = "Get Mifare Classic dump from PN532Killer Slot"
-        parser.add_argument(
-            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
-        )
-        parser.add_argument("--file", action="store_true", help="Save to json file")
-        parser.add_argument("--bin", action="store_true", help="Save to bin file")
-        return parser
-
-    def on_exec(self, args: argparse.Namespace):
-        self.device_com.set_work_mode(PN532KillerMode.EMULATOR, PN532KillerTagType.MFC, args.slot - 1)
-        dump_map = self.cmd.hf_mf_eread(args.slot)
-        # {"0": "11223344556677889900AABBCCDDEEFF", "1": "11223344556677889900AABBCCDDEEFF", ...}
-        if not dump_map:
-            print("Get dump failed")
-            return
-        file_name = "mf_dump_{args.slot}"
-        file_index = 0
-        if args.file:
-            while True:
-                if os.path.exists(f"{file_name}_{file_index}.json"):
-                    file_index += 1
-                else:
-                    file_name = f"{file_name}_{file_index}.json"
-                    break
-            with open(file_name, "w") as json_file:
-                json.dump({"blocks": dump_map}, json_file)
-        if args.bin:
-            while True:
-                if os.path.exists(f"{file_name}_{file_index}.bin"):
-                    file_index += 1
-                else:
-                    file_name = f"{file_name}_{file_index}.bin"
-                    break
-            with open(file_name, "wb") as bin_file:
-                for block_index, block_data in dump_map.items():
-                    bin_file.write(bytes.fromhex(block_data))
-
 @hf_mfu.command("rdbl")
-class HfMfRdbl(DeviceRequiredUnit):
+class HfMfuRdbl(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Read Mifare Ultralight block"
@@ -2205,7 +2170,7 @@ class HfMfRdbl(DeviceRequiredUnit):
                 print(f"Block {block} Failed to read")
 
 @hf_mfu.command("wrbl")
-class HfMfWrbl(DeviceRequiredUnit):
+class HfMfuWrbl(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = "Write Mifare Ultralight block"
@@ -2421,271 +2386,3 @@ examples:
                 print(f"Updated  UID: {CG}{uid.hex().upper()}{C0}")
             else:
                 print("Failed to read original Block0")
-
-@hf_mfu.command("eRead")
-class HfMfuEread(DeviceRequiredUnit):
-    def args_parser(self) -> ArgumentParserNoExit:
-        parser = ArgumentParserNoExit()
-        parser.description = "Get Mifare Ultralight dump from PN532Killer Slot"
-        parser.add_argument(
-            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
-        )
-        parser.add_argument("--file", action="store_true", help="Save to json file")
-        parser.add_argument("--bin", action="store_true", help="Save to bin file")
-        return parser
-
-    def on_exec(self, args: argparse.Namespace):
-        self.device_com.set_work_mode(PN532KillerMode.EMULATOR, PN532KillerTagType.MFU, args.slot - 1)
-        dump_map = self.cmd.hf_mfu_eread(args.slot)
-        # {"0": "11223344", "1": "55667788", ...}
-        if not dump_map:
-            print("Get dump failed")
-            return
-        file_name = f"mfu_dump_{args.slot}"
-        file_index = 0
-        if args.file:
-            while True:
-                if os.path.exists(f"{file_name}_{file_index}.json"):
-                    file_index += 1
-                else:
-                    file_name = f"{file_name}_{file_index}.json"
-                    break
-            # Convert bytes to hex strings for JSON serialization
-            json_dump_map = {}
-            for page_index, page_data in dump_map.items():
-                json_dump_map[str(page_index)] = page_data.hex().upper()
-            with open(file_name, "w") as json_file:
-                json.dump({"pages": json_dump_map}, json_file)
-        if args.bin:
-            file_name_bin = f"mfu_dump_{args.slot}"
-            file_index = 0
-            while True:
-                if os.path.exists(f"{file_name_bin}_{file_index}.bin"):
-                    file_index += 1
-                else:
-                    file_name_bin = f"{file_name_bin}_{file_index}.bin"
-                    break
-            with open(file_name_bin, "wb") as bin_file:
-                for page_index, page_data in dump_map.items():
-                    bin_file.write(page_data)
-
-@lf.command("scan")
-class LfScan(DeviceRequiredUnit):
-    def args_parser(self) -> ArgumentParserNoExit:
-        parser = ArgumentParserNoExit()
-        parser.description = "Scan LF tag, and print basic information"
-        return parser
-
-    def on_exec(self, args: argparse.Namespace):
-        resp = self.cmd.lf_scan()
-        if resp is not None:
-            for data_tag in resp:
-                if "dec" in data_tag:
-                    print(f"- ID  : {data_tag['id'].upper()}")
-                    print(f"  DEC : {data_tag['dec']}")
-        else:
-            print("LF Tag no found")
-
-
-@lf_em_410x.command("eSetid")
-class LfEm410xESetId(DeviceRequiredUnit):
-    def args_parser(self) -> ArgumentParserNoExit:
-        parser = ArgumentParserNoExit()
-        parser.description = "Set ID of EM410x Emulation"
-        parser.add_argument(
-            "-i",
-            type=str,
-            metavar="<hex>",
-            required=False,
-            help="ID to set (10 bytes)",
-        )
-        parser.add_argument(
-            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
-        )
-        return parser
-
-    def on_exec(self, args: argparse.Namespace):
-        if args.i is None:
-            print("usage: lf em410x esetid [-h] -i <hex> [-s SLOT]")
-            print("lf em410x esetid: error: the following arguments are required: -i")
-            return
-        id = args.i
-        if not re.match(r"^[a-fA-F0-9]{20}$", id):
-            print("ID must be 10 bytes hex")
-            return
-        resp = self.cmd.lf_em4100_eset_id(args.slot - 1, bytes.fromhex(id))
-        print(
-            f"Set Slot {args.slot} ID to {id} {CY}{'Success' if resp else 'Fail'}{C0}"
-        )
-
-
-@ntag.command("emulate")
-class NtagEmulate(DeviceRequiredUnit):
-    def args_parser(self) -> ArgumentParserNoExit:
-        parser = ArgumentParserNoExit()
-        parser.description = "Start NTAG emulating"
-        parser.add_argument(
-            "--uri",
-            type=str,
-            required=False,
-            help="URI to emulate",
-            default="https://pn532killer.com",
-        )
-        parser.epilog = (
-            parser.epilog
-        ) = """
-examples:
-    ntag emulate --uri https://pn532killer.com
-"""
-
-        return parser
-
-    def on_exec(self, args: argparse.Namespace):
-        self.device_com.set_normal_mode()
-        self.cmd.ntag_emulator(url=args.uri)
-
-@ntag.command("reader")
-class NtagReader(DeviceRequiredUnit):
-    def args_parser(self) -> ArgumentParserNoExit:
-        parser = ArgumentParserNoExit()
-        parser.description = "Read NTAG data and open URI in browser"
-        return parser
-
-    def on_exec(self, args: argparse.Namespace):
-        self.cmd.ntag_reader()
-        # Read dump file
-        dump_data = {}
-        if args.f.endswith('.mfd'):
-            with open(args.f, 'r') as f:
-                for line in f:
-                    if ':' in line:
-                        block_num, data = line.strip().split(':')
-                        dump_data[int(block_num)] = data.strip()
-        elif args.f.endswith('.bin'):
-            with open(args.f, 'rb') as f:
-                data = f.read()
-                if len(data) != 1024:  # 1KB
-                    print(f"{CR}Error: Bin file must be 1KB{C0}")
-                    return
-                for i in range(64):  # 64 blocks
-                    dump_data[i] = data[i*16:(i+1)*16].hex()
-        else:
-            print(f"{CR}Error: Unsupported file format{C0}")
-            return
-
-        resp = self.cmd.hf_14a_scan()
-        if resp is None:
-            print("No tag found")
-            return
-
-        self.sak_info(resp[0])
-        uid = resp[0]["uid"]
-        key = bytes.fromhex(args.k)
-
-        # Write tag depending on generation
-        gen = args.g
-        if gen == 1:  # Gen1A
-            if not self.cmd.isGen1a():
-                print(f"{CR}Tag is not Gen1A{C0}")
-                return
-            print("Found Gen1A:", f"{uid.hex().upper()}")
-            for block, block_data in dump_data.items():
-                options = {
-                    "activate_rf_field": 0,
-                    "wait_response": 1,
-                    "append_crc": 1,
-                    "auto_select": 0,
-                    "keep_rf_field": 1,
-                    "check_response_crc": 0,
-                }
-                resp = self.cmd.hf14a_raw(
-                    options=options,
-                    resp_timeout_ms=1000,
-                    data=[MifareCommand.MfWriteBlock, block],
-                )
-                options["keep_rf_field"] = 0
-                resp = self.cmd.hf14a_raw(
-                    options=options,
-                    resp_timeout_ms=1000,
-                    data=bytes.fromhex(block_data),
-                )
-                if resp and len(resp) > 0 and resp[0] == 0x00:
-                    print(f"Write block {block}: {CG}Success{C0}")
-                else:
-                    print(f"Write block {block}: {CR}Failed{C0}")
-
-        elif gen == 2:  # Gen2
-            for block, block_data in dump_data.items():
-                resp = self.cmd.mf1_write_block(
-                    uid,
-                    block,
-                    key,
-                    bytes.fromhex(block_data),
-                )
-                if resp:
-                    print(f"Write block {block}: {CG}Success{C0}")
-                else:
-                    print(f"Write block {block}: {CR}Failed{C0}")
-
-        elif gen == 3:  # Gen3
-            if not self.cmd.isGen3():
-                print(f"{CR}Tag is not Gen3{C0}")
-                return
-            print("Found Gen3 Tag")
-            # Set UI
-            resp1 = self.cmd.setGen3Uid(uid)
-            print(f"Set UID to {uid.hex().upper()}: {CG}Success{C0}" if resp1 else f"Set UID to {uid.hex().upper()}: {CR}Failed{C0}")
-            # Set block0
-            resp2 = self.cmd.setGen3Block0(bytes.fromhex(dump_data[0]))
-            print(f"Set block0: {CG}Success{C0}" if resp2 else f"Set block0: {CR}Failed{C0}")
-            # Write other blocks
-            for block, block_data in dump_data.items():
-                if block == 0:
-                    continue
-                resp = self.cmd.mf1_write_block(
-                    uid,
-                    block,
-                    key,
-                    bytes.fromhex(block_data),
-                )
-                if resp:
-                    print(f"Write block {block}: {CG}Success{C0}")
-                else:
-                    print(f"Write block {block}: {CR}Failed{C0}")
-
-        elif gen == 4:  # Gen4
-            if not self.cmd.isGen4(args.p):
-                print(f"{CR}Tag is not Gen4 or wrong password{C0}")
-                return
-            print("Found Gen4:", f"{uid.hex().upper()}")
-            for block, block_data in dump_data.items():
-                options = {
-                    "activate_rf_field": 0,
-                    "wait_response": 1,
-                    "append_crc": 1,
-                    "auto_select": 0,
-                    "keep_rf_field": 1,
-                    "check_response_crc": 0,
-                }
-                resp = self.cmd.hf14a_raw(
-                    options=options,
-                    resp_timeout_ms=1000,
-                    data=bytes.fromhex(f"CF{args.p}CD{block:02x}{block_data}"),
-                )
-                if resp and len(resp) > 0 and resp[0] == 0x00:
-                    print(f"Write block {block}: {CG}Success{C0}")
-                else:
-                    print(f"Write block {block}: {CR}Failed{C0}")
-
-        else:  # Normal card
-            for block, block_data in dump_data.items():
-                resp = self.cmd.mf1_write_block(
-                    uid,
-                    block,
-                    key,
-                    bytes.fromhex(block_data),
-                )
-                if resp:
-                    print(f"Write block {block}: {CG}Success{C0}")
-                else:
-                    print(f"Write block {block}: {CR}Failed{C0}")

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 import argparse
 import sys
 import traceback
@@ -127,10 +128,7 @@ class Pn532CLI:
         # :return: current cmd prompt
         if self.device_com.isOpen():
             # 判断连接类型
-            port = getattr(self.device_com, 'port', None)
-            if port is None and hasattr(self.device_com, 'communication') and hasattr(self.device_com.communication, 'serial_instance'):
-                # Serial connection
-                port = getattr(self.device_com.communication.serial_instance, 'port', None)
+            port = getattr(self.device_com, 'port_string', None)
             conn_type = "USB"
             if port:
                 if isinstance(port, str):
@@ -174,6 +172,14 @@ class Pn532CLI:
         cmd_strs = []
         cmd_str = ''
         while True:
+            # Check connection status before prompting
+            if self.device_com.isOpen():
+                # Double check if communication is still valid
+                if hasattr(self.device_com, 'communication') and self.device_com.communication:
+                    if not self.device_com.communication.is_open():
+                        print(f"{colorama.Fore.RED}Connection lost! Device disconnected.{colorama.Style.RESET_ALL}")
+                        self.device_com.close()
+            
             if cmd_strs:
                 print(f"{colorama.Fore.GREEN}>>> {cmd_strs[-1]}{colorama.Style.RESET_ALL}")
             # cmd_str = cmd_strs.pop(0)
