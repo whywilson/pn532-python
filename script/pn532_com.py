@@ -128,6 +128,24 @@ class Pn532Com:
     def in_release(self) -> response:
         response = self.send_cmd_sync(Command.InRelease, bytes.fromhex("00"))
         return response
+    
+    # --- helpers ---
+    def _normalize_payload(self, data: Union[bytes, bytearray, list, tuple, int, None]) -> bytes:
+        """Normalize payload to bytes. Accepts bytes/bytearray/list/tuple of ints(IntEnum)/single int/None."""
+        if data is None:
+            return b""
+        if isinstance(data, (bytes, bytearray)):
+            return bytes(data)
+        if isinstance(data, (list, tuple)):
+            return bytes([(int(x) & 0xFF) for x in data])
+        if isinstance(data, int):
+            return bytes([data & 0xFF])
+        # Fallback: try to bytes(), may raise which is fine to surface
+        return bytes(data)
+
+    def _hex_str(self, data: Union[bytes, bytearray, list, tuple, int, None]) -> str:
+        b = self._normalize_payload(data)
+        return b.hex().upper() if b else ""
 
     # PN532Killer
     def set_work_mode(self, mode: PN532KillerMode = PN532KillerMode.READER, type=PN532KillerTagType.MFC, index=0) -> response:
@@ -379,10 +397,13 @@ class Pn532Com:
             time.sleep(THREAD_BLOCKING_TIMEOUT)
 
     def make_data_frame_bytes(
-        self, cmd: int, data: Union[bytes, None] = None, status: int = 0
+        self,
+        cmd: int,
+        data: Union[bytes, bytearray, list, tuple, int, None] = None,
+        status: int = 0,
     ) -> bytes:
-        if data is None:
-            data = b""
+        # 支持 list/tuple/bytearray/bytes/int/None，多态输入统一转换
+        data = self._normalize_payload(data)
         commands = self.data_tfi_send.to_bytes(1, byteorder="big")
         commands += cmd.to_bytes(1, byteorder="big")
         commands = bytearray(commands)
@@ -438,12 +459,12 @@ class Pn532Com:
         self.wait_response_map[cmd]['_pre_registered'] = True
         self.wait_response_map[cmd]['_timeout_value'] = timeout
         if DEBUG:
-            print(f"PRE-REG CMD=0x{cmd:02X} TIMEOUT={timeout}s DATA={(data.hex().upper() if data else '')}")
+            print(f"PRE-REG CMD=0x{cmd:02X} TIMEOUT={timeout}s DATA={self._hex_str(data)}")
         task = {"cmd": cmd, "frame": data_frame, "timeout": timeout, "close": close}
         if callable(callback):
             task["callback"] = callback
         if DEBUG:
-            print(f"QUEUE CMD=0x{cmd:02X} TIMEOUT={timeout}s DATA={(data.hex().upper() if data else '')}")
+            print(f"QUEUE CMD=0x{cmd:02X} TIMEOUT={timeout}s DATA={self._hex_str(data)}")
         self.send_data_queue.put(task)
 
     def send_cmd_sync(
