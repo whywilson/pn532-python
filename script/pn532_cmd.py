@@ -48,15 +48,14 @@ class Pn532CMD:
 
         :return:
         """
-        # 根据连接类型调整一次性命令等待时间（不重发，只是给 UDP/TCP 更宽松的等待）
         timeout = 1
         if hasattr(self.device, 'connection_type') and self.device.connection_type in ('udp', 'tcp'):
             timeout = 2  # 给网络模式多一点时间
         resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b"\x01\x00", timeout=timeout)
         if resp.status == Status.SUCCESS:
-            if len(resp.data) < 2:
-                resp.parsed = None
-                return resp
+            # if len(resp.data) < 2:
+            #     resp.parsed = None
+            #     return resp
             offset = 0
             data = []
             while offset < len(resp.data):
@@ -107,13 +106,12 @@ class Pn532CMD:
         self.device.set_normal_mode()
 
         tag_info = {}
-        scan_result = self.hf_14a_scan()  # 装饰器返回 parsed 数据，不是 Response 对象
+        scan_result = self.hf_14a_scan() 
         
         if scan_result == None or len(scan_result) == 0:
             print("No tag found")
             return Response(Command.InListPassiveTarget, Status.HF_TAG_NO)
         
-        # scan_result 直接是标签信息列表，不需要 .parsed
         tag_info["uid"] = scan_result[0]["uid"].hex()
         tag_info["atqa"] = scan_result[0]["atqa"].hex()
         tag_info["sak"] = scan_result[0]["sak"].hex()
@@ -259,7 +257,7 @@ class Pn532CMD:
 
     def selectTag(self):
         tag_info = {}
-        scan_result = self.hf_14a_scan()  # 装饰器返回 parsed 数据，不是 Response 对象
+        scan_result = self.hf_14a_scan()
         self.device.halt()
         if scan_result == None or len(scan_result) == 0:
             print("No tag found")
@@ -284,18 +282,18 @@ class Pn532CMD:
             options=options, resp_timeout_ms=1000, data=[0x52], bitlen=7
         )
         if DEBUG: 
-            print("WUPA:", wupa_result.parsed.hex())
+            print("WUPA:", wupa_result)
         anti_coll_result = self.hf14a_raw(
             options=options, resp_timeout_ms=1000, data=[0x93, 0x20]
         )
         if DEBUG:
             print("Anticollision CL1:", anti_coll_result.hex())
-        if anti_coll_result[0] != 0x00:
+        if len(anti_coll_result) < 4:
             if DEBUG: 
                 print("Anticollision failed")
             return False
 
-        anti_coll_data = anti_coll_result[1:]
+        anti_coll_data = anti_coll_result[0:]
         options["append_crc"] = 1
         select_result = self.hf14a_raw(
             options=options, resp_timeout_ms=1000, data=[0x93, 0x70] + list(anti_coll_data)
@@ -308,13 +306,11 @@ class Pn532CMD:
         elif uid_length == 7:
             options["append_crc"] = 0
             anti_coll2_result = self.hf14a_raw( options=options, resp_timeout_ms=1000, data=[0x95, 0x20])
-            if DEBUG: 
-                print("Anticollision CL2:", anti_coll2_result.hex())
-            if anti_coll2_result[0] != 0x00:
+            if len(anti_coll2_result) < 4:
                 if DEBUG: 
                     print("Anticollision CL2 failed")
                 return False
-            anti_coll2_data = anti_coll2_result[1:]
+            anti_coll2_data = anti_coll2_result[0:]
             options["append_crc"] = 1
             select2_result = self.hf14a_raw(
                 options=options, resp_timeout_ms=1000, data=[0x95, 0x70] + list(anti_coll2_data)
@@ -363,7 +359,9 @@ class Pn532CMD:
         resp = self.hf14a_raw(
             options=options, resp_timeout_ms=2000, data=bytes.fromhex(command)
         )
-        if resp.parsed[0] == 0x00:
+        if DEBUG:
+            print("Set Gen3 UID:", resp.hex())
+        if len(resp) >= 2 and resp[0] == 0x90 and resp[1] == 0x00:
             return True
         return False
 
@@ -380,7 +378,7 @@ class Pn532CMD:
         resp = self.hf14a_raw(
             options=options, resp_timeout_ms=1000, data=bytes.fromhex(command)
         )
-        if resp.parsed[0] == 0x00:
+        if len(resp) >= 2 and resp[0] == 0x90 and resp[1] == 0x00:
             return True
         return False
 
@@ -397,7 +395,7 @@ class Pn532CMD:
         resp = self.hf14a_raw(
             options=options, resp_timeout_ms=1000, data=bytes.fromhex(command)
         )
-        if resp.parsed[0] == 0x00:
+        if len(resp) >= 2 and resp[0] == 0x90 and resp[1] == 0x00:
             return True
         return False
 
@@ -438,7 +436,7 @@ class Pn532CMD:
             if resp == None:
                 print("No tag found")
                 return resp
-            uidID1 = bytes(resp.parsed[0]["uid"])
+            uidID1 = bytes(resp[0]["uid"])
             auth_result = self.mf1_auth_one_key_block(block, MfcKeyType.A, key, uidID1)
             if not auth_result:
                 self.mf1_authenticated_useKeyA = False
@@ -465,7 +463,7 @@ class Pn532CMD:
         if resp == None:
             print("No tag found")
             return resp
-        uidID1 = bytes(resp.parsed[0]["uid"])
+        uidID1 = bytes(resp[0]["uid"])
         auth_result = self.mf1_auth_one_key_block(
             block, type_value, key, uidID1
         )

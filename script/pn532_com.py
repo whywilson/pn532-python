@@ -256,8 +256,8 @@ class Pn532Com:
                 break
             if not chunk:
                 continue
-            if DEBUG:
-                print(f"READ {chunk.hex().upper()}")
+            # if DEBUG:
+            #     print(f"READ {chunk.hex().upper()}")
             data_buffer.extend(chunk)
             # 过滤所有 ACK
             changed = True
@@ -265,8 +265,6 @@ class Pn532Com:
                 changed = False
                 pos = data_buffer.find(ACK)
                 if pos != -1:
-                    if DEBUG:
-                        print(f"SKIP ACK at {pos}")
                     del data_buffer[pos:pos+len(ACK)]
                     changed = True
             # 尝试解析帧
@@ -305,8 +303,8 @@ class Pn532Com:
                     continue
                 tfi = data[0]
                 if tfi != self.data_tfi_receive:
-                    if DEBUG:
-                        print(f"Unexpected TFI {tfi:02X} (expect {self.data_tfi_receive:02X}), resync")
+                    # if DEBUG:
+                    #     print(f"Unexpected TFI {tfi:02X} (expect {self.data_tfi_receive:02X}), resync")
                     i += 1
                     continue
                 if len(data) < 2:
@@ -458,13 +456,13 @@ class Pn532Com:
             self.wait_response_map[cmd]['response'] = None
         self.wait_response_map[cmd]['_pre_registered'] = True
         self.wait_response_map[cmd]['_timeout_value'] = timeout
-        if DEBUG:
-            print(f"PRE-REG CMD=0x{cmd:02X} TIMEOUT={timeout}s DATA={self._hex_str(data)}")
+        # if DEBUG:
+        #     print(f"PRE-REG CMD=0x{cmd:02X} TIMEOUT={timeout}s DATA={self._hex_str(data)}")
         task = {"cmd": cmd, "frame": data_frame, "timeout": timeout, "close": close}
         if callable(callback):
             task["callback"] = callback
-        if DEBUG:
-            print(f"QUEUE CMD=0x{cmd:02X} TIMEOUT={timeout}s DATA={self._hex_str(data)}")
+        # if DEBUG:
+        #     print(f"QUEUE CMD=0x{cmd:02X} TIMEOUT={timeout}s DATA={self._hex_str(data)}")
         self.send_data_queue.put(task)
 
     def send_cmd_sync(

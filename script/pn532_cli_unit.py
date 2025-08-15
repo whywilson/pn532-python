@@ -278,6 +278,35 @@ class RootClear(BaseCLIUnit):
         os.system("clear" if os.name == "posix" else "cls")
 
 
+@root.command("debug")
+class RootDebug(BaseCLIUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Toggle debug logging (debug on|off). No args shows current state"
+        # Accept on/off (case-insensitive)
+        def to_lower(v: str) -> str:
+            return v.lower()
+        parser.add_argument(
+            "state",
+            nargs="?",
+            type=to_lower,
+            choices=["on", "off"],
+            help="Enable (on) or disable (off) debug output",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if getattr(args, "state", None) is None:
+            print(f"Debug is currently: {CG if pn532_com.DEBUG else CR}{'ON' if pn532_com.DEBUG else 'OFF'}{C0}")
+            return
+        if args.state == "on":
+            pn532_com.DEBUG = True
+            print(f"Debug switched {CG}ON{C0}")
+        elif args.state == "off":
+            pn532_com.DEBUG = False
+            print(f"Debug switched {CR}OFF{C0}")
+
+
 @hw_mode.command("r")
 class HWModeReader(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -1431,7 +1460,7 @@ examples:
                 uid = str_to_bytes(block0[0:8])
                 bcc = uid[0] ^ uid[1] ^ uid[2] ^ uid[3]
                 # check if bcc is valid on the block0
-                if block0[8:10] != format(bcc, "02x"):
+                if int(block0[8:10], 16) != bcc:
                     print(f"{CR}Invalid BCC{C0}")
                     return
         return str_to_bytes(block0)
@@ -1956,16 +1985,17 @@ class HfMfRestore(DeviceRequiredUnit):
                 resp = self.cmd.hf14a_raw(
                     options=options,
                     resp_timeout_ms=1000,
-                    data=[MifareCommand.MfWriteBlock, 0],
+                    data=[MifareCommand.MfWriteBlock, block],
                 )
-                print(f"Writing block 0: {block0.hex().upper()}")
+                blk_bytes = bytes.fromhex(block_data)
+                print(f"Writing block {block}: {blk_bytes.hex().upper()}")
                 options["keep_rf_field"] = 0
                 resp = self.cmd.hf14a_raw(
                     options=options,
                     resp_timeout_ms=1000,
-                    data=block0,
+                    data=blk_bytes,
                 )
-                if resp.length > 0 and resp[0] == 0x00:
+                if resp and len(resp) > 0 and resp[0] == 0x00:
                     print(f"Write {block_data} to block {block}: {CG}Success{C0}")
                 else:
                     print(f"Write failed on block {block}")

@@ -12,7 +12,6 @@ from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import FileHistory
 from pn532_utils import CR, CG, CY, C0, CM
 import pn532_com
-from pn532_com import DEBUG
 
 BANNER_PN532Killer = """
 ██████╗ ███╗   ██╗███████╗██████╗ ██████╗ ██╗  ██╗██╗██╗     ██╗     ███████╗██████╗ 
