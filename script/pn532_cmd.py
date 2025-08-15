@@ -48,13 +48,14 @@ class Pn532CMD:
 
         :return:
         """
-        resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b"\x01\x00")
-        # print("response status = ", resp.status)
+        timeout = 1
+        if hasattr(self.device, 'connection_type') and self.device.connection_type in ('udp', 'tcp'):
+            timeout = 2  # 给网络模式多一点时间
+        resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b"\x01\x00", timeout=timeout)
         if resp.status == Status.SUCCESS:
-            if len(resp.data) < 2:
-                resp.parsed = None
-                return resp
-            # tagType[1]tagNum[1]atqa[2]sak[1]uidlen[1]uid[uidlen]
+            # if len(resp.data) < 2:
+            #     resp.parsed = None
+            #     return resp
             offset = 0
             data = []
             while offset < len(resp.data):
@@ -105,14 +106,15 @@ class Pn532CMD:
         self.device.set_normal_mode()
 
         tag_info = {}
-        resp = self.hf_14a_scan()
-        if resp == None:
+        scan_result = self.hf_14a_scan() 
+        
+        if scan_result == None or len(scan_result) == 0:
             print("No tag found")
-            return resp
-        # print("Tag found", resp)
-        tag_info["uid"] = resp[0]["uid"].hex()
-        tag_info["atqa"] = resp[0]["atqa"].hex()
-        tag_info["sak"] = resp[0]["sak"].hex()
+            return Response(Command.InListPassiveTarget, Status.HF_TAG_NO)
+        
+        tag_info["uid"] = scan_result[0]["uid"].hex()
+        tag_info["atqa"] = scan_result[0]["atqa"].hex()
+        tag_info["sak"] = scan_result[0]["sak"].hex()
         tag_info["data"] = []
         try:
             if not self.isGen1a():
@@ -132,24 +134,24 @@ class Pn532CMD:
             while block < 64:
                 if block == 63:
                     options["keep_rf_field"] = 0
-                resp = self.hf14a_raw(
+                resp_data = self.hf14a_raw(
                     options=options,
                     resp_timeout_ms=1000,
                     data=[MifareCommand.MfReadBlock, block],
-                )
-                if len(resp) > 16:
-                    resp = resp[:16]
-                block_data[f"{block}"] = resp.hex()
+                )  # 装饰器直接返回 parsed 数据（字节）
+                if len(resp_data) > 16:
+                    resp_data = resp_data[:16]
+                block_data[f"{block}"] = resp_data.hex()
                 if block == 0:
                     print(
-                        f"{block:02d}: {CY}{resp.hex()[0:8].upper()}{CR}{resp.hex()[8:10].upper()}{CG}{resp.hex()[10:12].upper()}{CY}{resp.hex()[12:16].upper()}{C0}{resp.hex()[16:].upper()}{C0}"
+                        f"{block:02d}: {CY}{resp_data.hex()[0:8].upper()}{CR}{resp_data.hex()[8:10].upper()}{CG}{resp_data.hex()[10:12].upper()}{CY}{resp_data.hex()[12:16].upper()}{C0}{resp_data.hex()[16:].upper()}{C0}"
                     )
                 elif block % 4 == 3:
                     print(
-                        f"{block:02d}: {CG}{resp.hex()[0:12].upper()}{CR}{resp.hex()[12:20].upper()}{CG}{resp.hex()[20:].upper()}{C0}"
+                        f"{block:02d}: {CG}{resp_data.hex()[0:12].upper()}{CR}{resp_data.hex()[12:20].upper()}{CG}{resp_data.hex()[20:].upper()}{C0}"
                     )
                 else:
-                    print(f"{block:02d}: {resp.hex().upper()}")
+                    print(f"{block:02d}: {resp_data.hex().upper()}")
                 block += 1
             tag_info["blocks"] = block_data
         except Exception as e:
@@ -238,34 +240,35 @@ class Pn532CMD:
             "check_response_crc": 0,
         }
         # Unlock 1
-        resp = self.hf14a_raw(
+        resp_data = self.hf14a_raw(
             options=options, resp_timeout_ms=1000, data=[0x40], bitlen=7
         )
         if DEBUG:
-            print("unlock 1:", resp.hex())
-        if resp[-1] == 0x0A:
+            print("unlock 1:", resp_data.hex())
+        if resp_data[-1] == 0x0A:
             options["activate_rf_field"] = 0
             # Unlock 2
-            resp = self.hf14a_raw(options=options, resp_timeout_ms=1000, data=[0x43])
+            resp_data = self.hf14a_raw(options=options, resp_timeout_ms=1000, data=[0x43])
             if DEBUG:
-                print("unlock 2:", resp.hex())
-            if resp[-1] == 0x0A:
+                print("unlock 2:", resp_data.hex())
+            if resp_data[-1] == 0x0A:
                 return True
         return False
 
     def selectTag(self):
         tag_info = {}
-        resp = self.hf_14a_scan()
+        scan_result = self.hf_14a_scan()
         self.device.halt()
-        if resp == None:
+        if scan_result == None or len(scan_result) == 0:
             print("No tag found")
-            return resp
-        tag_info["uid"] = resp[0]["uid"].hex()
-        uid_length = len(resp[0]["uid"])
+            return Response(Command.InListPassiveTarget, Status.HF_TAG_NO)
+        
+        tag_info["uid"] = scan_result[0]["uid"].hex()
+        uid_length = len(scan_result[0]["uid"])
         if DEBUG:
             print("Found UID:", tag_info["uid"])
-        tag_info["atqa"] = resp[0]["atqa"].hex()
-        tag_info["sak"] = resp[0]["sak"].hex()
+        tag_info["atqa"] = scan_result[0]["atqa"].hex()
+        tag_info["sak"] = scan_result[0]["sak"].hex()
         tag_info["data"] = []
         options = {
             "activate_rf_field": 0,
@@ -279,18 +282,18 @@ class Pn532CMD:
             options=options, resp_timeout_ms=1000, data=[0x52], bitlen=7
         )
         if DEBUG: 
-            print("WUPA:", wupa_result.hex())
+            print("WUPA:", wupa_result)
         anti_coll_result = self.hf14a_raw(
             options=options, resp_timeout_ms=1000, data=[0x93, 0x20]
         )
         if DEBUG:
             print("Anticollision CL1:", anti_coll_result.hex())
-        if anti_coll_result[0] != 0x00:
+        if len(anti_coll_result) < 4:
             if DEBUG: 
                 print("Anticollision failed")
             return False
 
-        anti_coll_data = anti_coll_result[1:]
+        anti_coll_data = anti_coll_result[0:]
         options["append_crc"] = 1
         select_result = self.hf14a_raw(
             options=options, resp_timeout_ms=1000, data=[0x93, 0x70] + list(anti_coll_data)
@@ -303,13 +306,11 @@ class Pn532CMD:
         elif uid_length == 7:
             options["append_crc"] = 0
             anti_coll2_result = self.hf14a_raw( options=options, resp_timeout_ms=1000, data=[0x95, 0x20])
-            if DEBUG: 
-                print("Anticollision CL2:", anti_coll2_result.hex())
-            if anti_coll2_result[0] != 0x00:
+            if len(anti_coll2_result) < 4:
                 if DEBUG: 
                     print("Anticollision CL2 failed")
                 return False
-            anti_coll2_data = anti_coll2_result[1:]
+            anti_coll2_data = anti_coll2_result[0:]
             options["append_crc"] = 1
             select2_result = self.hf14a_raw(
                 options=options, resp_timeout_ms=1000, data=[0x95, 0x70] + list(anti_coll2_data)
@@ -358,7 +359,9 @@ class Pn532CMD:
         resp = self.hf14a_raw(
             options=options, resp_timeout_ms=2000, data=bytes.fromhex(command)
         )
-        if resp[0] == 0x00:
+        if DEBUG:
+            print("Set Gen3 UID:", resp.hex())
+        if len(resp) >= 2 and resp[0] == 0x90 and resp[1] == 0x00:
             return True
         return False
 
@@ -375,7 +378,7 @@ class Pn532CMD:
         resp = self.hf14a_raw(
             options=options, resp_timeout_ms=1000, data=bytes.fromhex(command)
         )
-        if resp[0] == 0x00:
+        if len(resp) >= 2 and resp[0] == 0x90 and resp[1] == 0x00:
             return True
         return False
 
@@ -392,7 +395,7 @@ class Pn532CMD:
         resp = self.hf14a_raw(
             options=options, resp_timeout_ms=1000, data=bytes.fromhex(command)
         )
-        if resp[0] == 0x00:
+        if len(resp) >= 2 and resp[0] == 0x90 and resp[1] == 0x00:
             return True
         return False
 
@@ -410,8 +413,8 @@ class Pn532CMD:
             options=options, resp_timeout_ms=1000, data=bytes.fromhex(command)
         )
         if DEBUG:
-            print("isGen4:", resp.hex())
-        if len(resp) >= 30:
+            print("isGen4:", resp.parsed.hex())
+        if len(resp.parsed) >= 30:
             return True
         return False
 
@@ -847,14 +850,14 @@ class Pn532CMD:
             resp = self.download_data_block(type = 1, slot = slot, index = block)
             if block == 0:
                 print(
-                            f"block {block:02d}: {CY}{resp.hex()[0:8].upper()}{CR}{resp.hex()[8:10].upper()}{CG}{resp.hex()[10:14].upper()}{C0}{resp.hex()[14:].upper()}{C0}"
+                            f"block {block:02d}: {CY}{resp.parsed.hex()[0:8].upper()}{CR}{resp.parsed.hex()[8:10].upper()}{CG}{resp.parsed.hex()[10:14].upper()}{C0}{resp.parsed.hex()[14:].upper()}{C0}"
                         )
             elif block % 4 == 3:
                 print(
-                            f"block {block:02d}: {CG}{resp.hex()[0:12].upper()}{CR}{resp.hex()[12:20].upper()}{CG}{resp.hex()[20:].upper()}{C0}"
+                            f"block {block:02d}: {CG}{resp.parsed.hex()[0:12].upper()}{CR}{resp.parsed.hex()[12:20].upper()}{CG}{resp.parsed.hex()[20:].upper()}{C0}"
                         )
             else:
-                print(f"block {block:02d}: {resp.hex().upper()}")
+                print(f"block {block:02d}: {resp.parsed.hex().upper()}")
             mifare_dump[block] = resp
         return mifare_dump
 
@@ -874,21 +877,21 @@ class Pn532CMD:
         for page in range(4):
             resp = self.download_data_block(type = 2, slot = slot, index = page)
             if page == 0:
-                print(f"page {page:02d}: {CY}{resp.hex()[0:6].upper()}{CR}{resp.hex()[6:8].upper()}{C0}")
+                print(f"page {page:02d}: {CY}{resp.parsed.hex()[0:6].upper()}{CR}{resp.parsed.hex()[6:8].upper()}{C0}")
             elif page == 1:
-                print(f"page {page:02d}: {CY}{resp.hex().upper()}{C0}")
+                print(f"page {page:02d}: {CY}{resp.parsed.hex().upper()}{C0}")
             elif page == 2:
-                print(f"page {page:02d}: {CR}{resp.hex()[0:2].upper()}{CG}{resp.hex()[2:].upper()}{C0}")
+                print(f"page {page:02d}: {CR}{resp.parsed.hex()[0:2].upper()}{CG}{resp.parsed.hex()[2:].upper()}{C0}")
             elif page == 3:
-                print(f"page {page:02d}: {CG}{resp.hex().upper()}{C0}")
+                print(f"page {page:02d}: {CG}{resp.parsed.hex().upper()}{C0}")
                 # page 3 , index 2 is the max page indicator
-                if len(resp) >= 3:
-                    max_page = resp[2] * 2 + 12
+                if len(resp.parsed) >= 3:
+                    max_page = resp.parsed[2] * 2 + 12
             mfu_dump[page] = resp
         # Read remaining pages
         for page in range(4, max_page):
             resp = self.download_data_block(type = 2, slot = slot, index = page)
-            print(f"page {page:02d}: {resp.hex().upper()}")
+            print(f"page {page:02d}: {resp.parsed.hex().upper()}")
             mfu_dump[page] = resp
         return mfu_dump
 
@@ -1263,7 +1266,7 @@ def test_fn():
             if "PN532Killer" in port.description:
                 dev.open(port.device)
                 break
-    print(f"Connected to {dev.serial_instance.port}")
+    print(f"Connected to {dev.get_connection_info()}")
     print(f"Device: {dev.device_name}")
     cml = Pn532CMD(dev)
 
@@ -1283,7 +1286,7 @@ def test_fn():
                 resp_timeout_ms=1000,
                 data= bytes.fromhex("cf00000000ce00"),
             )
-        print("hf14a_raw:", resp.hex().upper())
+        print("hf14a_raw:", resp.parsed.hex().upper())
     except Exception as e:
         print("Error:", e)
     dev.close()

@@ -4,11 +4,15 @@ on:
   push:
     branches:
       - main 
+      - dev
   pull_request:
     branches:
       - main
   release:
     types: [created]
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -43,8 +47,54 @@ jobs:
       run: |
         pyinstaller script/pyinstaller.spec
 
-    - name: Upload artifacts
+    - name: Package artifact (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        zip -r "${{ matrix.artifact_name }}.zip" dist/*
+
+    - name: Package artifact (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        zip -r "${{ matrix.artifact_name }}.zip" dist/*
+
+    - name: Package artifact (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        Compress-Archive -Path "dist/*" -DestinationPath "${{ matrix.artifact_name }}.zip"
+
+    - name: Upload artifacts (zip only)
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
-        path: dist/
+        path: ${{ matrix.artifact_name }}.zip
+
+  prerelease:
+    name: Create prerelease and attach builds
+    needs: build
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compute short SHA
+        id: vars
+        run: echo "short_sha=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*'
+          merge-multiple: true
+          path: release-assets
+
+      - name: Create GitHub prerelease and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: beta.${{ steps.vars.outputs.short_sha }}
+          name: PN532 CLI - beta.${{ steps.vars.outputs.short_sha }}
+          prerelease: true
+          draft: false
+          body: |
+            Auto-generated beta prerelease for commit ${{ github.sha }}.
+            This release contains PyInstaller builds for Linux, Windows, and macOS.
+          files: |
+            release-assets/*.zip

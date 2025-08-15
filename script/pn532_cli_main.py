@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 import argparse
 import sys
 import traceback
@@ -11,7 +12,6 @@ from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import FileHistory
 from pn532_utils import CR, CG, CY, C0, CM
 import pn532_com
-from pn532_com import DEBUG
 
 BANNER_PN532Killer = """
 ██████╗ ███╗   ██╗███████╗██████╗ ██████╗ ██╗  ██╗██╗██╗     ██╗     ███████╗██████╗ 
@@ -123,12 +123,28 @@ class Pn532CLI:
         self.device_com.set_device_name(device_name)
 
     def get_prompt(self):
-        """
-        Retrieve the cli prompt
-
-        :return: current cmd prompt
-        """
-        device_string = f"{CG}USB" if self.device_com.isOpen() else f"{CR}Offline"
+        # Retrieve the cli prompt
+        # :return: current cmd prompt
+        if self.device_com.isOpen():
+            # 判断连接类型
+            port = getattr(self.device_com, 'port_string', None)
+            conn_type = "USB"
+            if port:
+                if isinstance(port, str):
+                    if port.startswith('tcp:'):
+                        conn_type = "TCP"
+                    elif port.startswith('udp:'):
+                        conn_type = "UDP"
+            # 兼容 CommunicationFactory 连接
+            if hasattr(self.device_com, 'communication'):
+                comm = self.device_com.communication
+                if comm.__class__.__name__ == "TCPCommunication":
+                    conn_type = "TCP"
+                elif comm.__class__.__name__ == "UDPCommunication":
+                    conn_type = "UDP"
+            device_string = f"{CG}{conn_type}"
+        else:
+            device_string = f"{CR}Offline"
         device_name = self.device_com.get_device_name()
         status = f"[{device_string}{C0}] {device_name} --> "
         return status
@@ -155,6 +171,14 @@ class Pn532CLI:
         cmd_strs = []
         cmd_str = ''
         while True:
+            # Check connection status before prompting
+            if self.device_com.isOpen():
+                # Double check if communication is still valid
+                if hasattr(self.device_com, 'communication') and self.device_com.communication:
+                    if not self.device_com.communication.is_open():
+                        print(f"{colorama.Fore.RED}Connection lost! Device disconnected.{colorama.Style.RESET_ALL}")
+                        self.device_com.close()
+            
             if cmd_strs:
                 print(f"{colorama.Fore.GREEN}>>> {cmd_strs[-1]}{colorama.Style.RESET_ALL}")
             # cmd_str = cmd_strs.pop(0)

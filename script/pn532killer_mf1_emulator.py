@@ -70,10 +70,10 @@ def test_fn():
                 dev.open(port.device)
                 break
         
-    if dev.serial_instance is None:
+    if not dev.isOpen():
         print("No PN532/PN532Killer found")
         return
-    print(f"Connected to {dev.serial_instance.port}, {dev.device_name}")
+    print(f"Connected to {dev.get_connection_info()}, {dev.device_name}")
     cml = Pn532CMD(dev)
 
     try:
