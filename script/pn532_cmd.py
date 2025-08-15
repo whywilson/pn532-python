@@ -242,7 +242,7 @@ class Pn532CMD:
         # Unlock 1
         resp_data = self.hf14a_raw(
             options=options, resp_timeout_ms=1000, data=[0x40], bitlen=7
-        )  # 装饰器返回字节数据
+        )
         if DEBUG:
             print("unlock 1:", resp_data.hex())
         if resp_data[-1] == 0x0A:

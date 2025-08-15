@@ -282,7 +282,7 @@ class RootClear(BaseCLIUnit):
 class RootDebug(BaseCLIUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
-        parser.description = "Toggle debug logging (debug on|off). No args shows current state"
+        parser.description = "Toggle debug logging (debug on|off)."
         # Accept on/off (case-insensitive)
         def to_lower(v: str) -> str:
             return v.lower()
@@ -2168,11 +2168,13 @@ class HfMfuRdbl(DeviceRequiredUnit):
         parser = ArgumentParserNoExit()
         parser.description = "Read Mifare Ultralight block"
         parser.add_argument(
-            "-blk",
+            "-b", "--blk",
+            dest="blk",
             type=int,
             metavar="<dec>",
-            required=True,
-            help="Block to read",
+            required=False,
+            default=0,
+            help="Block to read (default 0)",
         )
         return parser
 
@@ -2203,9 +2205,10 @@ class HfMfuRdbl(DeviceRequiredUnit):
 class HfMfuWrbl(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
-        parser.description = "Write Mifare Ultralight block"
+        parser.description = "Write Mifare Ultralight block (blocks 0-2 are blocked to avoid soft-brick)"
         parser.add_argument(
-            "-blk",
+            "-b", "--blk",
+            dest="blk",
             type=int,
             metavar="<dec>",
             required=True,
@@ -2226,9 +2229,9 @@ class HfMfuWrbl(DeviceRequiredUnit):
         if not re.match(r"^[a-fA-F0-9]{8}$", data):
             print("Data must be 4 bytes hex")
             return
-        # if block is less than 4, show warning
-        if block < 3:
-            print(f"{CR}Warning: Single writing to block {block} may brick the tag{C0}")
+        if block in (0, 1, 2):
+            print(f"{CR}Blocked single write to reserved page {block} (0/1/2): this would corrupt the BCC and can soft-brick the tag; recovery may require specialized tools.{C0}")
+            print(f"{CY}Recommendation: only update the first 3 pages as a whole using the proper procedure/device, and only if you fully understand the process.{C0}")
             return
         resp = self.cmd.hf_14a_scan()
         if resp == None:
