@@ -4,11 +4,15 @@ on:
   push:
     branches:
       - main 
+      - dev
   pull_request:
     branches:
       - main
   release:
     types: [created]
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -48,3 +52,29 @@ jobs:
       with:
         name: ${{ matrix.artifact_name }}
         path: dist/
+
+  prerelease:
+    name: Create prerelease and attach builds
+    needs: build
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*'
+          merge-multiple: true
+          path: release-assets
+
+      - name: Create GitHub prerelease and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: beta-${{ github.run_number }}
+          name: Beta ${{ github.run_number }}
+          prerelease: true
+          draft: false
+          body: |
+            Auto-generated beta prerelease for commit ${{ github.sha }}.
+            This release contains PyInstaller builds for Linux, Windows, and macOS.
+          files: |
+            release-assets/**
