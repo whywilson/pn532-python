@@ -32,6 +32,16 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v3
 
+    - name: Install MSYS2 toolchain
+      if: runner.os == 'Windows'
+      uses: msys2/setup-msys2@v2
+      with:
+        update: true
+        install: >-
+          base-devel
+          mingw-w64-x86_64-toolchain
+        path-type: inherit
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
@@ -43,9 +53,45 @@ jobs:
         pip install -r script/requirements.txt
         pip install pyinstaller
 
+    - name: Build mfkey tools (Linux/macOS)
+      if: runner.os != 'Windows'
+      run: |
+        chmod +x script/build_helpers.sh
+        ./script/build_helpers.sh
+
+    - name: Build mfkey tools (Windows)
+      if: runner.os == 'Windows'
+      shell: msys2 {0}
+      env:
+        CC: gcc
+      run: |
+        chmod +x script/build_helpers.sh
+        ./script/build_helpers.sh
+
     - name: Run PyInstaller
       run: |
         pyinstaller script/pyinstaller.spec
+
+    - name: Bundle mfkey binaries (Linux/macOS)
+      if: runner.os != 'Windows'
+      run: |
+        mkdir -p dist/pn532_cli_main/mfkey
+        cp build/mfkey32v2 build/mfkey64 build/staticnested dist/pn532_cli_main/mfkey/
+
+    - name: Bundle mfkey binaries (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path "dist/pn532_cli_main/mfkey" | Out-Null
+        $targets = @('mfkey32v2','mfkey64','staticnested')
+        foreach ($target in $targets) {
+          $basePath = Join-Path 'build' $target
+          $source = if (Test-Path $basePath) { $basePath } elseif (Test-Path "${basePath}.exe") { "${basePath}.exe" } else { $null }
+          if (-not $source) {
+            throw "Missing build artifact: $target(.exe)"
+          }
+          Copy-Item -Path $source -Destination "dist/pn532_cli_main/mfkey" -Force
+        }
 
     - name: Package artifact (Linux)
       if: runner.os == 'Linux'

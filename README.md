@@ -30,6 +30,20 @@ pn532_cli_main.exe --debug
 ./pn532_cli_main --debug
 ```
 
+### PN532Killer MFkey workflow
+1. Build the standalone mfkey helpers once via `script/build_helpers.sh` (creates `build/mfkey32v2` and `build/mfkey64`).
+2. Switch PN532Killer to sniffer mode and capture an authentication:
+	- Card present → run `hf mf mfkey64` to parse the sniff buffer and feed `mfkey64` automatically.
+	- No card (UID emulation) → run `hf mf mfkey32v2` to pair nonce captures and call `mfkey32v2`.
+3. Use `--show-raw` to see the NT/NR/AR(/AT) tuples that were forwarded to the tools.
+4. The CLI leaves the PN532Killer sniff buffer untouched; run `hf sniff clear` manually when you want to discard captured frames.
+
+### PN532Killer staticnested workflow
+1. Build the helper binaries via `script/build_helpers.sh` (creates `build/staticnested`).
+2. Authenticate to a sector with a known key and immediately to the target sector using `hf mf staticnested --known-key <hex> --known-block <dec> --target-block <dec>`.
+3. Optional flags: `--known-key-type`, `--target-key-type`, and `--show-raw` to display nonce/keystream details plus the `staticnested` stdout; the CLI auto-derives the required 8-byte datakey as `0x0000 || known-key` per the firmware spec.
+4. The command fetches nonce pairs via PN532Killer's `ReadUserDefData` helper and calls the bundled `staticnested` binary automatically; recovered keys are printed in-line.
+
 ## Features
 ### PN532
 - [x] Read and write Mifare Classic Mini, 1K, 4K

@@ -11,6 +11,7 @@ import serial.tools.list_ports
 import json
 import threading
 import struct
+import shutil
 from unit.calc import str_to_bytes
 from unit.calc import is_hex
 from unit.preset import FactoryPreset
@@ -53,10 +54,63 @@ block_size_dict = {
 }
 
 default_cwd = Path.cwd() / Path(__file__).with_name("bin")
+tool_build_dir = Path(__file__).resolve().parent.parent / "build"
+legacy_mfkey_dir = tool_build_dir / "mfkey"
+
+
+def _helper_binary(name: str) -> Union[Path, None]:
+    suffix = ".exe" if os.name == "nt" else ""
+    candidates = [
+        tool_build_dir / f"{name}{suffix}",
+        tool_build_dir / name,
+        legacy_mfkey_dir / f"{name}{suffix}",
+        legacy_mfkey_dir / name,
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    alt = shutil.which(f"{name}{suffix}")
+    return Path(alt) if alt else None
+
+
+def _run_mfkey(name: str, args: list[str], verbose: bool = False):
+    tool_path = _helper_binary(name)
+    if tool_path is None:
+        print(
+            f"{CR}Missing {name} binary. Run script/build_helpers.sh first to compile the helpers.{C0}"
+        )
+        return None, None
+    env = os.environ.copy()
+    env[f"{name.upper()}_VERBOSE"] = "1" if verbose else "0"
+    try:
+        completed = subprocess.run(
+            [str(tool_path), *args], capture_output=True, text=True, check=False, env=env
+        )
+    except FileNotFoundError:
+        print(
+            f"{CR}Cannot execute {tool_path}. Rebuild helpers via script/build_helpers.sh.{C0}"
+        )
+        return None, None
+    output = (completed.stdout or "") + (completed.stderr or "")
+    key_match = re.search(r"Found Key:\s*\[([0-9a-fA-F]{12})\]", output)
+    key_hex = key_match.group(1).upper() if key_match else None
+    if completed.returncode != 0 and key_hex is None:
+        print(f"{CR}{name} exited with code {completed.returncode}{C0}")
+        if output:
+            print(output.strip())
+    return key_hex, output
+
+
+def _keytype_label(key_byte: int) -> str:
+    return "A" if key_byte == 0x60 else "B"
+
+
+def _fmt32(value: int) -> str:
+    return f"{value:08X}"
 
 
 def check_tools():
-    tools = ["staticnested", "nested", "darkside", "mfkey32v2"]
+    tools = ["staticnested", "nested", "darkside", "mfkey32v2", "mfkey64"]
     if sys.platform == "win32":
         tools = [x + ".exe" for x in tools]
     missing_tools = [tool for tool in tools if not (default_cwd / tool).exists()]
@@ -1789,6 +1843,279 @@ class HfMfDump(DeviceRequiredUnit):
                         bin_file.write(bytes.fromhex(block_data))
         else:
             print(f"{CR}Not MiFare Classic{C0}")
+
+@hf_mf.command("staticnested")
+class HfMfStaticnested(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Run a static-nested attack via PN532Killer helpers."
+        parser.add_argument(
+            "--known-key",
+            required=True,
+            metavar="<hex>",
+            help="Known 6-byte key for the reference block (12 hex characters)",
+        )
+        parser.add_argument(
+            "--known-block",
+            type=int,
+            required=True,
+            metavar="<dec>",
+            help="Reference block that uses the known key",
+        )
+        parser.add_argument(
+            "--known-key-type",
+            choices=["A", "a", "B", "b"],
+            default="A",
+            help="Reference key type (default: A)",
+        )
+        parser.add_argument(
+            "--target-block",
+            type=int,
+            required=True,
+            metavar="<dec>",
+            help="Target block to recover",
+        )
+        parser.add_argument(
+            "--target-key-type",
+            choices=["A", "a", "B", "b"],
+            default="B",
+            help="Target key type (default: B)",
+        )
+        parser.add_argument(
+            "--show-raw",
+            action="store_true",
+            help="Print collected nonce/keystream pairs and tool output",
+        )
+        parser.epilog = "PN532Killer expects an 8-byte datakey field (0x0000||known-key); the CLI fills this automatically."
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if not re.fullmatch(r"[0-9a-fA-F]{12}", args.known_key):
+            raise ArgsParserError("--known-key must be exactly 12 hex characters")
+        key_bytes = bytes.fromhex(args.known_key)
+        datakey = b"\x00\x00" + key_bytes
+        known_block = args.known_block
+        target_block = args.target_block
+        if not (0 <= known_block <= 0xFF and 0 <= target_block <= 0xFF):
+            raise ArgsParserError("Block numbers must be between 0 and 255")
+        known_type = MfcKeyType.B if args.known_key_type.upper() == "B" else MfcKeyType.A
+        target_type = MfcKeyType.B if args.target_key_type.upper() == "B" else MfcKeyType.A
+
+        scan = self.cmd.hf_14a_scan()
+        if scan is None or len(scan) == 0:
+            print("No tag found")
+            return
+
+        session = self.cmd.read_userdef_staticnested(
+            datakey,
+            known_block,
+            int(known_type),
+            target_block,
+            int(target_type),
+        )
+        if not session:
+            print(
+                f"{CR}Static-nested helper did not return nonce data. Ensure the card is static and the known key/block are correct.{C0}"
+            )
+            return
+
+        show_details = args.show_raw or pn532_com.DEBUG
+        uid_fmt = _fmt32(session["uid"])
+        target_label = _keytype_label(session["key_type"])
+        print(f"UID: {uid_fmt}")
+        print(f"Target block {target_block} key {target_label}")
+        print(
+            f"Nonce #0 -> NT={_fmt32(session['nt0'])} KS={_fmt32(session['ks0'])}"
+        )
+        print(
+            f"Nonce #1 -> NT={_fmt32(session['nt1'])} KS={_fmt32(session['ks1'])}"
+        )
+
+        args_list = [
+            uid_fmt,
+            f"{session['key_type']:02X}",
+            _fmt32(session["nt0"]),
+            _fmt32(session["ks0"]),
+            _fmt32(session["nt1"]),
+            _fmt32(session["ks1"]),
+        ]
+        key_hex, output = _run_mfkey("staticnested", args_list, verbose=show_details)
+        if key_hex is None and output is None:
+            return
+        if key_hex:
+            print(f"Recovered key: {key_hex}")
+        else:
+            print(f"{CR}staticnested did not find a key{C0}")
+        if show_details and output:
+            for line in output.strip().splitlines():
+                print(f"    {line}")
+
+@hf_mf.command("mfkey64")
+class HfMfMfkey64(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Use PN532Killer sniff data to run mfkey64 (card present sessions)."
+        parser.add_argument(
+            "--show-raw",
+            action="store_true",
+            help="Display captured nonce tuples and mfkey logs (auto when debug on)",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        entries = self.cmd.hf_sniff_get_mfkey_entries(with_card=True)
+        if not entries:
+            print(
+                f"{CR}No card-present sniff data found. Put PN532Killer into sniffer mode, capture an auth, then retry.{C0}"
+            )
+            return
+        show_details = args.show_raw or pn532_com.DEBUG
+        unique_entries = []
+        seen_chunks = set()
+        for entry in entries:
+            chunk = (entry["uid"], entry["nt"], entry["nr"], entry["ar"], entry["at"])
+            if chunk in seen_chunks:
+                continue
+            seen_chunks.add(chunk)
+            unique_entries.append(entry)
+        print(f"Found {len(unique_entries)} captured authentication(s).")
+        print(f"{'#':<2} {'UID':<8} {'Sec':<3} {'Key':<3} {'Result':<12}")
+        for idx, entry in enumerate(unique_entries, start=1):
+            args_list = [
+                _fmt32(entry["uid"]),
+                _fmt32(entry["nt"]),
+                _fmt32(entry["nr"]),
+                _fmt32(entry["ar"]),
+                _fmt32(entry["at"]),
+            ]
+            key_hex, output = _run_mfkey("mfkey64", args_list, verbose=show_details)
+            if key_hex is None and output is None:
+                return
+            key_display = key_hex or "(not found)"
+            print(
+                f"{idx:<2} {_fmt32(entry['uid'])} {entry['sector']:02d} {_keytype_label(entry['key_type'])} {key_display}"
+            )
+            if show_details:
+                print(
+                    f"    NT={_fmt32(entry['nt'])} NR={_fmt32(entry['nr'])} AR={_fmt32(entry['ar'])} AT={_fmt32(entry['at'])}"
+                )
+                output_str = (output or "").strip()
+                if output_str:
+                    for line in output_str.splitlines():
+                        print(f"    {line}")
+
+
+@hf_mf.command("mfkey32v2")
+class HfMfMfkey32v2(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Use PN532Killer no-card sniff data to run mfkey32v2 (needs nonce pairs)."
+        parser.add_argument(
+            "--show-raw",
+            action="store_true",
+            help="Display captured nonce tuples used for each calculation",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        entries = self.cmd.hf_sniff_get_mfkey_entries(with_card=False)
+        if len(entries) < 2:
+            print(
+                f"{CR}Need at least 2 sniff entries before running mfkey32v2.{C0}"
+            )
+            return
+        groups = {}
+        for entry in entries:
+            key = (entry["uid"], entry["sector"], entry["key_type"])
+            groups.setdefault(key, [])
+            # avoid duplicates
+            if any(
+                existing["nt"] == entry["nt"]
+                and existing["nr"] == entry["nr"]
+                and existing["ar"] == entry["ar"]
+                for existing in groups[key]
+            ):
+                continue
+            groups[key].append(entry)
+        print(f"Captured nonce sets for {len(groups)} sector/key slot(s).")
+        print(f"{'#':<2} {'UID':<8} {'Sec':<3} {'Key':<3} {'Result':<12}")
+        idx = 1
+        for (uid, sector, key_type), captures in groups.items():
+            if len(captures) < 2:
+                print(
+                    f"{idx:<2} {_fmt32(uid)} {sector:02d} {_keytype_label(key_type)} (need another nonce)"
+                )
+                idx += 1
+                continue
+            key_hex = None
+            chosen_pair = None
+            for i in range(len(captures)):
+                for j in range(i + 1, len(captures)):
+                    if captures[i]["nt"] == captures[j]["nt"]:
+                        continue
+                    args_list = [
+                        _fmt32(uid),
+                        _fmt32(captures[i]["nt"]),
+                        _fmt32(captures[i]["nr"]),
+                        _fmt32(captures[i]["ar"]),
+                        _fmt32(captures[j]["nt"]),
+                        _fmt32(captures[j]["nr"]),
+                        _fmt32(captures[j]["ar"]),
+                    ]
+                    key_hex, output = _run_mfkey(
+                        "mfkey32v2",
+                        args_list,
+                        verbose=(args.show_raw or pn532_com.DEBUG),
+                    )
+                    if key_hex is None and output is None:
+                        return
+                    chosen_pair = (captures[i], captures[j])
+                    if key_hex:
+                        break
+                if key_hex:
+                    break
+            key_display = key_hex or "(not found)"
+            print(f"{idx:<2} {_fmt32(uid)} {sector:02d} {_keytype_label(key_type)} {key_display}")
+            if args.show_raw and chosen_pair:
+                a, b = chosen_pair
+                print(
+                    f"    Pair A: NT={_fmt32(a['nt'])} NR={_fmt32(a['nr'])} AR={_fmt32(a['ar'])}\n"
+                    f"    Pair B: NT={_fmt32(b['nt'])} NR={_fmt32(b['nr'])} AR={_fmt32(b['ar'])}"
+                )
+            idx += 1
+
+
+@hf_mf.command("nested")
+class HfMfNested(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Run a proxmark-style nested attack via mfoc"
+        parser.add_argument("card", type=str, help="Card size flag (0/1/2/4 or 'o' for one-sector mode)")
+        parser.add_argument("block", type=str, help="Known block index or '*' for auto search")
+        parser.add_argument("key_type", type=str, choices=["A", "a", "B", "b"], help="Known key type")
+        parser.add_argument("key", type=str, help="Known 6-byte key (12 hex chars)")
+        parser.add_argument(
+            "flags",
+            nargs="?",
+            default="",
+            help="Optional flags: d (dump), t (emulator transfer unsupported), s/ss (slow)"
+        )
+        parser.add_argument(
+            "--mfoc",
+            dest="mfoc_path",
+            help="Override mfoc executable path"
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        known_key = args.key.upper()
+        if not re.fullmatch(r"[0-9A-F]{12}", known_key):
+            raise ArgsParserError("Key must include 12 HEX symbols")
+
+        mfoc_path = args.mfoc_path or shutil.which("mfoc")
+        if not mfoc_path:
+            print(f"{CR}mfoc executable not found. Install mfoc and ensure it is in PATH or pass --mfoc <path>{C0}")
+            return
 
 @hf_mf.command("wipe")
 class HfMfWipe(DeviceRequiredUnit):

@@ -40,6 +40,7 @@ class Pn532KillerCommand(enum.IntEnum):
     SetWorkMode = 0xAC
     GetSnifferLog = 0x20
     ClearSnifferLog = 0x22
+    ReadUserDefData = 0x24
 
 BasicCapabilities = [
     "RootExit",
@@ -67,6 +68,7 @@ PN532Capabilities = [
     "Hf14aGen4Pwd",
     "HfMfuSetUid",
     "HfMfuEread",
+    "HfMfNested",
 ]
 PN532KillerCapabilities = [
     "HWModeReader",
@@ -89,6 +91,9 @@ PN532KillerCapabilities = [
     "HF15ESetResvEasAfiDsfid",
     "HfMfESetUid",
     "HfMfEload",
+    "HfMfMfkey64",
+    "HfMfMfkey32v2",
+    "HfMfStaticnested",
     "HfMfEread",
     "LfScan",
     "LfEm410xESetId",

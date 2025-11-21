@@ -585,6 +585,87 @@ class Pn532CMD:
         self.upload_data_block(slot = 0x11, data = block0)
         self.upload_data_block_done(slot = 0x11)
         return Response(Pn532KillerCommand.setEmulatorData, Status.SUCCESS)
+
+    def hf_sniff_clear(self):
+        """Clear buffered sniffer frames on PN532Killer."""
+        payload = bytes([0x01, 0x00])
+        resp = self.device.send_cmd_sync(Pn532KillerCommand.ClearSnifferLog, payload)
+        return resp.status == Status.SUCCESS
+
+    def hf_sniff_get_mfkey_entries(self, with_card: bool = True):
+        """Fetch mfkey-ready nonce tuples from the sniffer log."""
+        tag_flag = 0x01 if with_card else 0x00
+        payload = bytes([0x01, tag_flag])
+        resp = self.device.send_cmd_sync(Pn532KillerCommand.GetSnifferLog, payload)
+        if resp.status != Status.SUCCESS or len(resp.data) < 2:
+            return []
+        raw_entries = resp.data[2:]
+        entry_size = 24 if with_card else 20
+        max_entries = 4 if with_card else 8
+        parsed = []
+        for idx in range(max_entries):
+            start = idx * entry_size
+            chunk = raw_entries[start : start + entry_size]
+            if len(chunk) < entry_size:
+                break
+            if not any(chunk):
+                continue
+            entry = {
+                "uid": int.from_bytes(chunk[0:4], "little"),
+                "nt": int.from_bytes(chunk[4:8], "little"),
+                "nr": int.from_bytes(chunk[8:12], "little"),
+                "ar": int.from_bytes(chunk[12:16], "little"),
+                "sector": chunk[20] if with_card else chunk[16],
+                "key_type": chunk[21] if with_card else chunk[17],
+            }
+            if with_card:
+                entry["at"] = int.from_bytes(chunk[16:20], "little")
+            parsed.append(entry)
+        return parsed
+
+    def read_userdef_staticnested(
+        self,
+        datakey: bytes,
+        known_block: int,
+        known_key_type: int,
+        target_block: int,
+        target_key_type: int,
+    ):
+        """Request PN532Killer to perform a static-nested probe and return nonce pairs."""
+        if len(datakey) != 8:
+            raise ValueError("datakey must be exactly 8 bytes")
+        for label, value in (
+            ("known_block", known_block),
+            ("target_block", target_block),
+        ):
+            if not (0 <= value <= 0xFF):
+                raise ValueError(f"{label} must fit in one byte")
+        payload = bytes(
+            [
+                0x01,
+                *datakey,
+                known_block & 0xFF,
+                known_key_type & 0xFF,
+                target_block & 0xFF,
+                target_key_type & 0xFF,
+            ]
+        )
+        resp = self.device.send_cmd_sync(
+            Pn532KillerCommand.ReadUserDefData, payload, timeout=2
+        )
+        if resp.status != Status.SUCCESS or len(resp.data) < 21:
+            return None
+        data = resp.data
+        parsed = {
+            "uid": int.from_bytes(data[0:4], "big"),
+            "key_type": data[4],
+            "nt0": int.from_bytes(data[5:9], "big"),
+            "ks0": int.from_bytes(data[9:13], "big"),
+            "nt1": int.from_bytes(data[13:17], "big"),
+            "ks1": int.from_bytes(data[17:21], "big"),
+        }
+        resp.parsed = parsed
+        return parsed
     
     @expect_response(Status.SUCCESS)
     def hf_mf_esetuid(self, slot, uid: bytes):
