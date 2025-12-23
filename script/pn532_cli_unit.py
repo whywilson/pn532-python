@@ -30,6 +30,7 @@ from pn532_utils import ArgumentParserNoExit, ArgsParserError, CG, CR, C0, CY, C
 
 import pn532_com
 import pn532_cmd
+import pn532_dfu
 
 # NXP IDs based on https://www.nxp.com/docs/en/application-note/AN10833.pdf
 type_id_SAK_dict = {
@@ -1341,6 +1342,188 @@ class HWVersion(DeviceRequiredUnit):
             print(f"Version: {version}")
         else:
             print("Failed to get firmware version")
+
+
+@hw.command("fw")
+class HwFirmwareUpgrade(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Upgrade PN532Killer firmware from .bin file"
+        parser.add_argument("--bin", required=True, help="Path to firmware .bin file")
+        return parser
+
+    def before_exec(self, args: argparse.Namespace):
+        # Bypass capability filtering; this is PN532Killer-only but not a core PN532 command
+        # Force mode doesn't require device to be connected first
+        return True
+
+    def on_exec(self, args: argparse.Namespace):
+        from unit.ad15_firmware_util import DeviceInitInfo
+        
+        bin_path = Path(args.bin)
+        if not bin_path.exists():
+            print(f"Firmware file not found: {bin_path}")
+            return
+
+        firmware_data = bin_path.read_bytes()
+        if not firmware_data:
+            print("Firmware file is empty.")
+            return
+
+        # Always use force mode in CLI
+        port = getattr(self.device_com, "port_string", None)
+        if not port:
+            print(f"{CR}Please connect to device first with: hw connect -p <port>{C0}")
+            print("Example: hw connect -p /dev/cu.wchusbserial000000011")
+            return
+        
+        print(f"\n{'='*60}")
+        print(f"{CY}DFU Mode - Firmware Update{C0}")
+        print(f"{'='*60}")
+        print(f"1. HOLD the button on the device")
+        print(f"2. While holding, PLUG IN the USB cable")
+        print(f"3. Release the button after USB is connected")
+        print(f"4. The device should now be in DFU mode")
+        print(f"5. Press ENTER to start firmware update")
+        print(f"{'='*60}\n")
+        
+        try:
+            input("Press ENTER when device is in DFU mode...")
+        except KeyboardInterrupt:
+            print(f"\n{CR}Upgrade cancelled.{C0}")
+            return
+
+        print(f"Using port: {port}")
+        print(f"Firmware size: {len(firmware_data)} bytes")
+
+        # Close CLI communication threads before taking over the port for DFU
+        if self.device_com.isOpen():
+            self.device_com.close()
+
+        # Check if debug mode is enabled
+        from pn532_com import DEBUG
+        verbose = DEBUG
+        
+        dfu = pn532_dfu.Pn532KillerDfu(port, verbose=verbose)
+        try:
+            # Force mode: open directly in DFU mode and wake up bootloader
+            print(f"Opening port at 921600 baud...")
+            dfu.open(dfu_mode=True)
+            
+            if dfu.serial:
+                # Clear buffers
+                dfu.serial.reset_input_buffer()
+                dfu.serial.reset_output_buffer()
+                
+                # Wake up bootloader
+                if verbose:
+                    print("[DFU] Triggering bootloader wake-up...")
+                dfu.serial.rts = True
+                dfu.serial.dtr = True
+                time.sleep(0.2)
+                dfu.serial.rts = False
+                time.sleep(0.5)
+                
+                # Clear buffers again
+                dfu.serial.reset_input_buffer()
+                dfu.serial.reset_output_buffer()
+            
+            print("Bootloader wake-up complete")
+            time.sleep(0.3)
+
+            # Get device info
+            print("Getting device info...")
+            init_info = dfu.get_device_init_info()
+            
+            if init_info is None:
+                print(f"{CY}Could not get device info, using default values{C0}")
+                init_info = DeviceInitInfo(
+                    status=0,
+                    zone_addr=0x100,
+                    upgrade_len=0,
+                    flash_eoffset_size=0x0,
+                    erase_unit_size=4096
+                )
+                print(f"Using defaults: zone=0x{init_info.zone_addr:X}, offset=0x{init_info.flash_eoffset_size:X}, erase={init_info.erase_unit_size}")
+            else:
+                print(f"Init -> zone=0x{init_info.zone_addr:X}, offset=0x{init_info.flash_eoffset_size:X}, erase={init_info.erase_unit_size}")
+                
+                check_info = dfu.get_device_check_info()
+                if check_info:
+                    print(f"Check -> VID=0x{check_info.vid:04X}, PID=0x{check_info.pid:X}, SDK=0x{check_info.sdk_id:X}")
+
+            # Validate firmware
+            if len(firmware_data) <= init_info.zone_addr:
+                print(f"{CR}Firmware file is smaller than zone address; aborting.{C0}")
+                return
+
+            # Calculate blocks
+            file_size = len(firmware_data) - init_info.zone_addr
+            block_count = (file_size + init_info.erase_unit_size - 1) // init_info.erase_unit_size
+            aligned_size = block_count * init_info.erase_unit_size
+            
+            if aligned_size != file_size:
+                print(f"Padding firmware: {file_size} -> {aligned_size} bytes")
+                firmware_data += bytes([0xFF]) * (aligned_size - file_size)
+
+            file_buf = firmware_data[init_info.zone_addr : init_info.zone_addr + aligned_size]
+            file_crc_list = pn532_dfu.Pn532KillerDfu.get_buffer_crc_list(
+                file_buf, block_count, init_info.erase_unit_size
+            )
+
+            # Always update all blocks (no CRC comparison)
+            upgrade_addr = init_info.flash_eoffset_size
+            blocks_updated = 0
+            
+            def print_progress(current, total, prefix="Progress", suffix="", length=40):
+                """Print progress bar with colors"""
+                percent = current / total
+                filled = int(length * percent)
+                bar = '█' * filled + '-' * (length - filled)
+                print(f'\r{prefix} {CG}|{bar}|{C0} {percent*100:.1f}% {suffix}', end='', flush=True)
+            
+            print(f"\nUpdating {block_count} blocks...")
+            for idx in range(block_count):
+                off = idx * init_info.erase_unit_size
+                
+                # Erase block
+                print_progress(idx * 2, block_count * 2, prefix="Erasing", suffix=f"Block {idx+1}/{block_count}")
+                if not dfu.erase_flash(upgrade_addr + off, init_info.erase_unit_size):
+                    print(f"\n{CR}Erase failed at block {idx+1}{C0}")
+                    return
+                
+                # Write block
+                print_progress(idx * 2 + 1, block_count * 2, prefix="Writing", suffix=f"Block {idx+1}/{block_count}")
+                chunk = file_buf[off : off + init_info.erase_unit_size]
+                if not dfu.write_flash(chunk, upgrade_addr + off, init_info.erase_unit_size, erase_unit=4096):
+                    print(f"\n{CR}Write failed at block {idx+1}{C0}")
+                    return
+                blocks_updated += 1
+
+            # Complete progress bar
+            print_progress(block_count * 2, block_count * 2, prefix="Complete", suffix=f"{blocks_updated}/{block_count} blocks")
+            print(f"\n{CG}Updated {blocks_updated}/{block_count} blocks{C0}")
+
+            # Verify
+            print("Verifying firmware...")
+            new_chip_crc_list = dfu.get_chip_crc_list(
+                init_info.flash_eoffset_size, block_count, init_info.erase_unit_size
+            )
+            
+            if new_chip_crc_list == file_crc_list:
+                print(f"{CG}✓ Firmware update successful!{C0}")
+                print("Rebooting device...")
+                dfu.dfu_reboot()
+            else:
+                print(f"{CR}✗ Firmware verification failed!{C0}")
+                print("Device will NOT be rebooted.")
+        except KeyboardInterrupt:
+            print(f"\n{CR}Upgrade interrupted by user{C0}")
+        except Exception as e:
+            print(f"{CR}Upgrade failed: {e}{C0}")
+        finally:
+            dfu.close()
+            print("Port closed")
 
 
 @hw_led.command("on")
