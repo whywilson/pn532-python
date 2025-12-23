@@ -571,7 +571,28 @@ class Pn532CMD:
         resp = self.device.send_cmd_sync(
             Command.GetFirmwareVersion, None, Status.SUCCESS, 1
         )
-        resp.parsed = f"Ver.{resp.data.hex()}"
+        version_hex = resp.data.hex()
+        resp.parsed = f"Ver.{version_hex}"
+
+        # PN532Killer encodes the last three bytes as YY MM DD; surface a friendlier date string.
+        if len(resp.data) >= 4 and self.device.get_device_name() == "PN532Killer":
+            ic = resp.data[0]
+            year, month, day = resp.data[1:4]
+            resp.parsed = f"Ver.{version_hex} (IC 0x{ic:02X}, Date {year:02d}-{month:02d}-{day:02d})"
+        return resp
+
+    def led_on(self):
+        if self.device.get_device_name() != "PN532Killer":
+            raise ValueError("LED control is only supported on PN532Killer")
+        resp = self.device.send_cmd_sync(Command.WriteGPIO, b"\x00\x01")
+        resp.parsed = resp.status == Status.SUCCESS
+        return resp
+
+    def led_off(self):
+        if self.device.get_device_name() != "PN532Killer":
+            raise ValueError("LED control is only supported on PN532Killer")
+        resp = self.device.send_cmd_sync(Command.WriteGPIO, b"\x00\x00")
+        resp.parsed = resp.status == Status.SUCCESS
         return resp
 
     @expect_response(Status.SUCCESS)

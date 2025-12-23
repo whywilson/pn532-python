@@ -74,6 +74,8 @@ PN532KillerCapabilities = [
     "HWModeReader",
     "HWModeSniffer",
     "HWModeEmulator",
+    "HWLedOn",
+    "HWLedOff",
     "HF15Scan",
     "HF15Info",
     "HF15Rdbl",

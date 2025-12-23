@@ -21,7 +21,7 @@ from typing import Union
 from pathlib import Path
 from platform import uname
 from datetime import datetime
-from pn532_enum import MfcKeyType, MifareCommand, PN532KillerMode, PN532KillerTagType
+from pn532_enum import MfcKeyType, MifareCommand, PN532KillerMode, PN532KillerTagType, Status
 
 from pn532_utils import CLITree
 
@@ -123,6 +123,7 @@ def check_tools():
 
 root = CLITree(root=True)
 hw = root.subgroup("hw", "Hardware-related commands")
+hw_led = hw.subgroup("led", "LED control commands")
 hw_mode = hw.subgroup("mode", "Mode-related commands")
 hf = root.subgroup("hf", "High-frequency commands")
 hf_14a = hf.subgroup("14a", "ISO 14443-A commands")
@@ -1340,6 +1341,38 @@ class HWVersion(DeviceRequiredUnit):
             print(f"Version: {version}")
         else:
             print("Failed to get firmware version")
+
+
+@hw_led.command("on")
+class HWLedOn(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Turn on PN532Killer LED"
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if self.device_com.get_device_name() != "PN532Killer":
+            print("LED control is only supported on PN532Killer.")
+            return
+        resp = self.cmd.led_on()
+        ok = resp.parsed if hasattr(resp, "parsed") else (resp.status == Status.SUCCESS)
+        print(f"LED on: {'Success' if ok else 'Fail'}")
+
+
+@hw_led.command("off")
+class HWLedOff(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Turn off PN532Killer LED"
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if self.device_com.get_device_name() != "PN532Killer":
+            print("LED control is only supported on PN532Killer.")
+            return
+        resp = self.cmd.led_off()
+        ok = resp.parsed if hasattr(resp, "parsed") else (resp.status == Status.SUCCESS)
+        print(f"LED off: {'Success' if ok else 'Fail'}")
 
 
 @hf_sniff.command("setuid")
