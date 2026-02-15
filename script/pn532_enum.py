@@ -509,8 +509,8 @@ class PN532KillerMode(enum.IntEnum):
 class PN532KillerTagType(enum.IntEnum):
     MFC = 1
     MFU = 2
-    EM4100 = 3
-    ISO15693 = 4
+    ISO15693 = 3
+    EM4100 = 4
 
     def __str__(self):
         if self == PN532KillerTagType.MFC:
