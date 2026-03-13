@@ -54,7 +54,19 @@ block_size_dict = {
     0x19: 128,
 }
 
-default_cwd = Path.cwd() / Path(__file__).with_name("bin")
+hf_tag_type_dict = {
+    # 14A tags
+    0x01: "NTAG 213",
+    0x02: "NTAG 215",
+    0x03: "NTAG 216",
+    0x11: "MIFARE Classic 4B1K (ATQA: 0x0400, SAK: 0x08)",
+    0x12: "MIFARE Classic 4B4K (ATQA: 0x0200, SAK: 0x18)",
+    0x13: "MIFARE Classic 7B1K (ATQA: 0x4400, SAK: 0x08)",
+    0x14: "MIFARE Classic 7B4K (ATQA: 0x4200, SAK: 0x18)",
+    # 15 tags
+    0x81: "ISO15693 (4 bytes/block)",
+}
+default_cwd = Path(__file__).resolve().parent
 tool_build_dir = Path(__file__).resolve().parent.parent / "build"
 legacy_mfkey_dir = tool_build_dir / "mfkey"
 
@@ -399,6 +411,30 @@ class HWModeEmulator(DeviceRequiredUnit):
         slot = args.slot
         self.device_com.set_work_mode(PN532KillerMode.EMULATOR, type, slot - 1)
         print("Switch to {  Emulator  } mode successfully.")
+        
+        # Get emulator block 0 data and tag type
+        emulator_data = self.cmd.get_emulator_block0_and_type(type=type, slot=slot - 1)
+        if emulator_data is not None:
+            print(f"\n{CG}Slot {slot} Information:{C0}")
+            print(f"  Tag Type: {CY}{emulator_data['tag_type_name']}{C0} (0x{emulator_data['tag_type']:02X})")
+            # block0_data is bytes, convert to hex if needed
+            block0_hex = emulator_data['block0'].hex().upper() if isinstance(emulator_data['block0'], bytes) else emulator_data['block0']
+            print(f"  Block 0:  {CG}{block0_hex}{C0}")
+            
+            # For MIFARE Classic types, parse block 0 info
+            if emulator_data['tag_type'] in [0x11, 0x12, 0x13, 0x14]:
+                print(f"\n{CG}MIFARE Classic Block 0 Details:{C0}")
+                block0_bytes = emulator_data['block0']
+                uid = block0_bytes[:4].hex().upper()
+                bcc = block0_bytes[4]
+                sak = block0_bytes[5]
+                atqa = block0_bytes[6:8].hex().upper()
+                print(f"  UID:      {CY}{uid}{C0}")
+                print(f"  BCC:      {bcc:02X}")
+                print(f"  SAK:      {sak:02X}")
+                print(f"  ATQA:     {atqa}")
+        else:
+            print(f"{CR}Failed to read emulator data{C0}")
 
 
 @hw_mode.command("s")
@@ -2059,6 +2095,78 @@ class HfMfDump(DeviceRequiredUnit):
                         bin_file.write(bytes.fromhex(block_data))
         else:
             print(f"{CR}Not MiFare Classic{C0}")
+
+@hf_mf.command("eRead")
+class HfMfEread(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Read Mifare Classic emulator dump"
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        parser.add_argument(
+            "--json", action="store_true", help="Save to json file"
+        )
+        parser.add_argument(
+            "--bin", action="store_true", help="Save to bin file"
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        slot = args.slot
+        
+        # Switch to the target slot in emulator mode first
+        # Type 1 = MIFARE Classic
+        self.device_com.set_work_mode(PN532KillerMode.EMULATOR, 1, slot - 1)
+        
+        print(f"Reading Mifare Classic 1K emulator from slot {args.slot}...")
+        dump_map = self.cmd.hf_mf_eread(slot)
+        
+        if dump_map is None or len(dump_map) == 0:
+            print(f"{CR}Failed to read emulator data{C0}")
+            return
+        
+        # Generate filename based on slot
+        filename_base = f"mf_eread_slot{args.slot}"
+        
+        # Save to JSON if requested
+        if args.json:
+            json_data = {
+                "slot": args.slot,
+                "type": "MIFARE Classic 1K",
+                "blocks": {}
+            }
+            for block_idx, block_resp in dump_map.items():
+                if hasattr(block_resp, 'parsed'):
+                    json_data["blocks"][block_idx] = block_resp.parsed.hex().upper()
+                else:
+                    json_data["blocks"][block_idx] = block_resp.hex().upper() if isinstance(block_resp, bytes) else str(block_resp)
+            
+            json_file = f"{filename_base}.json"
+            with open(json_file, "w") as f:
+                json.dump(json_data, f, indent=2)
+            print(f"{CG}Saved to {json_file}{C0}")
+        
+        # Save to BIN if requested
+        if args.bin:
+            bin_file = f"{filename_base}.bin"
+            with open(bin_file, "wb") as f:
+                for block_idx in range(64):
+                    if block_idx in dump_map:
+                        block_resp = dump_map[block_idx]
+                        if hasattr(block_resp, 'parsed'):
+                            f.write(block_resp.parsed)
+                        elif isinstance(block_resp, bytes):
+                            f.write(block_resp)
+                        else:
+                            f.write(bytes.fromhex(str(block_resp)))
+                    else:
+                        f.write(b'\x00' * 16)
+            print(f"{CG}Saved to {bin_file}{C0}")
+        
+        # Print summary
+        if not args.json and not args.bin:
+            print(f"{CG}Read {len(dump_map)} blocks from slot {args.slot}{C0}")
 
 @hf_mf.command("staticnested")
 class HfMfStaticnested(DeviceRequiredUnit):

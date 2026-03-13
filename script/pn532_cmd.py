@@ -950,16 +950,17 @@ class Pn532CMD:
         mifare_dump = {}
         for block in range(64):
             resp = self.download_data_block(type = 1, slot = slot, index = block)
+            # resp is already bytes due to @expect_response decorator
             if block == 0:
                 print(
-                            f"block {block:02d}: {CY}{resp.parsed.hex()[0:8].upper()}{CR}{resp.parsed.hex()[8:10].upper()}{CG}{resp.parsed.hex()[10:14].upper()}{C0}{resp.parsed.hex()[14:].upper()}{C0}"
+                            f"block {block:02d}: {CY}{resp.hex()[0:8].upper()}{CR}{resp.hex()[8:10].upper()}{CG}{resp.hex()[10:14].upper()}{C0}{resp.hex()[14:].upper()}{C0}"
                         )
             elif block % 4 == 3:
                 print(
-                            f"block {block:02d}: {CG}{resp.parsed.hex()[0:12].upper()}{CR}{resp.parsed.hex()[12:20].upper()}{CG}{resp.parsed.hex()[20:].upper()}{C0}"
+                            f"block {block:02d}: {CG}{resp.hex()[0:12].upper()}{CR}{resp.hex()[12:20].upper()}{CG}{resp.hex()[20:].upper()}{C0}"
                         )
             else:
-                print(f"block {block:02d}: {resp.parsed.hex().upper()}")
+                print(f"block {block:02d}: {resp.hex().upper()}")
             mifare_dump[block] = resp
         return mifare_dump
 
@@ -1048,6 +1049,79 @@ class Pn532CMD:
     def prepare_get_emulator_data(self, type = 1, slot = 0):
         resp = self.download_data_block(type, slot, 0xFF)
         return Response(Pn532KillerCommand.getEmulatorData, Status.SUCCESS)
+
+    @expect_response(Status.SUCCESS)
+    def get_emulator_tag_type(self, type = 1, slot = 0):
+        """
+        Get the tag type of the emulator slot
+        
+        :param type: 1 - MFC, 2 - MFU, 3 - 15693, 4 - EM4100
+        :param slot: slot number, 1 byte
+        :return: Tag type value (integer) or None
+        """
+        # Apply slot offset based on type
+        # MFC: 0, MFU: 0, 15693: 0x1A, EM4100: 0x12
+        slot_offset = {
+            1: 0x00,    # MFC
+            2: 0x00,    # MFU
+            3: 0x1A,    # 15693
+            4: 0x12,    # EM4100
+        }
+        actual_slot = slot + slot_offset.get(type, 0x00)
+        
+        # 0x00 = read emulator slot info, actual_slot = slot number with offset
+        data = struct.pack("!BB", 0x00, actual_slot)
+        resp = self.device.send_cmd_sync(Pn532KillerCommand.getEmulatorData, data)
+        if len(resp.data) >= 5:
+            tag_type = resp.data[4]
+            resp.parsed = tag_type
+        else:
+            resp.parsed = None
+        return resp
+
+    def get_emulator_block0_and_type(self, type = 1, slot = 0):
+        """
+        Get emulator block 0 data and tag type
+        
+        :param type: 1 - MFC, 2 - MFU, 3 - 15693, 4 - EM4100
+        :param slot: slot number (0-7)
+        :return: dict with 'type', 'block0' and 'type_name'
+        """
+        # Get tag type first (returns parsed value due to @expect_response decorator)
+        tag_type = self.get_emulator_tag_type(type=type, slot=slot)
+        if tag_type is None:
+            return None
+        
+        # Prepare to get emulator data
+        self.prepare_get_emulator_data(type=type, slot=slot)
+        sleep(0.02)
+        
+        # Download block 0
+        block0_resp = self.download_data_block(type=type, slot=slot, index=0)
+        if block0_resp is None:
+            return None
+        
+        block0_data = block0_resp
+        
+        # Map tag type to name
+        tag_type_map = {
+            0x01: "NTAG 213",
+            0x02: "NTAG 215",
+            0x03: "NTAG 216",
+            0x11: "MIFARE Classic 4B1K (ATQA: 0x0400, SAK: 0x08)",
+            0x12: "MIFARE Classic 4B4K (ATQA: 0x0200, SAK: 0x18)",
+            0x13: "MIFARE Classic 7B1K (ATQA: 0x4400, SAK: 0x08)",
+            0x14: "MIFARE Classic 7B4K (ATQA: 0x4200, SAK: 0x18)",
+            0x81: "ISO15693 (4 bytes/block)",
+        }
+        
+        type_name = tag_type_map.get(tag_type, f"Unknown (0x{tag_type:02X})")
+        
+        return {
+            'tag_type': tag_type,
+            'tag_type_name': type_name,
+            'block0': block0_data,
+        }
 
     @expect_response(Status.SUCCESS)
     def ntag_emulator(self, url: str):
