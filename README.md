@@ -44,6 +44,12 @@ pn532_cli_main.exe --debug
 3. Optional flags: `--known-key-type`, `--target-key-type`, and `--show-raw` to display nonce/keystream details plus the `staticnested` stdout; the CLI auto-derives the required 8-byte datakey as `0x0000 || known-key` per the firmware spec.
 4. The command fetches nonce pairs via PN532Killer's `ReadUserDefData` helper and calls the bundled `staticnested` binary automatically; recovered keys are printed in-line.
 
+### Built-in hf mf mfoc / nestedattack
+1. `hf mf mfoc` now runs a project-internal mfoc-like flow (no system `mfoc` dependency): default key dictionary probe + sector key discovery + optional dump via `-O`.
+2. You can extend keys with `--key <hex>` and `-k <file>`, or disable defaults via `--no-default-keys`.
+3. `hf mf nestedattack --known-key <hex> --known-block <dec>` runs recursive static-nested recovery across sectors on PN532Killer.
+4. Legacy `hf mf nested ...` is kept as a compatibility alias and now dispatches to the built-in nestedattack pipeline.
+
 ## Features
 ### PN532
 - [x] Read and write Mifare Classic Mini, 1K, 4K
@@ -58,6 +64,8 @@ pn532_cli_main.exe --debug
 - [x] MFkey32v2
 - [x] MFkey64
 - [x] Staticnested attack
+- [x] MFoc-like dictionary + dump attack (`hf mf mfoc`)
+- [x] Recursive static nested attack (`hf mf nestedattack`)
 
 ## Protocols
 ### PN532
