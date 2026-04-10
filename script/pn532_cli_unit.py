@@ -21,7 +21,7 @@ from typing import Union
 from pathlib import Path
 from platform import uname
 from datetime import datetime
-from pn532_enum import MfcKeyType, MifareCommand, PN532KillerMode, PN532KillerTagType, Status
+from pn532_enum import Command, MfcKeyType, MifareCommand, PN532KillerMode, PN532KillerTagType, Status
 
 from pn532_utils import CLITree
 
@@ -122,8 +122,445 @@ def _fmt32(value: int) -> str:
     return f"{value:08X}"
 
 
+DEFAULT_MF_KEYS = [
+    bytes.fromhex("FFFFFFFFFFFF"),
+    bytes.fromhex("000000000000"),
+    bytes.fromhex("A0A1A2A3A4A5"),
+    bytes.fromhex("B0B1B2B3B4B5"),
+    bytes.fromhex("4D3A99C351DD"),
+    bytes.fromhex("1A982C7E459A"),
+    bytes.fromhex("D3F7D3F7D3F7"),
+    bytes.fromhex("AABBCCDDEEFF"),
+    bytes.fromhex("714C5C886E97"),
+    bytes.fromhex("587EE5F9350F"),
+    bytes.fromhex("A0478CC39091"),
+    bytes.fromhex("533CB6C723F6"),
+    bytes.fromhex("8FD0A4F256E9"),
+    bytes.fromhex("0004A5B7C909"),
+    bytes.fromhex("B578F38A5C61"),
+    bytes.fromhex("96A301BCE267"),
+]
+
+
+def _sector_count_from_sak(sak_byte: int) -> int:
+    if sak_byte == 0x09:
+        return 5
+    if sak_byte == 0x08:
+        return 16
+    if sak_byte == 0x19:
+        return 32
+    if sak_byte == 0x18:
+        return 40
+    return 0
+
+
+def _block_count_from_sector_count(sector_count: int) -> int:
+    if sector_count <= 0:
+        return 0
+    block_count = 0
+    for sector in range(sector_count):
+        block_count += get_block_size_by_sector(sector)
+    return block_count
+
+
+def _sector_from_block(block: int) -> int:
+    if block < 0:
+        return -1
+    if block < 128:
+        return block // 4
+    if block < 256:
+        return 32 + ((block - 128) // 16)
+    return -1
+
+
+def _trailer_block_for_sector(sector: int) -> int:
+    first = get_block_index_by_sector(sector)
+    size = get_block_size_by_sector(sector)
+    if size <= 0:
+        return -1
+    return first + size - 1
+
+
+def _normalize_key_hex(key_hex: str) -> Union[bytes, None]:
+    if not key_hex:
+        return None
+    key_hex = key_hex.strip().upper()
+    if not re.fullmatch(r"[0-9A-F]{12}", key_hex):
+        return None
+    return bytes.fromhex(key_hex)
+
+
+def _prepend_unique_keys(dst: list[bytes], keys: list[bytes]):
+    seen = set(dst)
+    for key in keys:
+        if key in seen:
+            continue
+        dst.insert(0, key)
+        seen.add(key)
+
+
+def _build_key_pool(args: argparse.Namespace) -> list[bytes]:
+    pool: list[bytes] = []
+    if not getattr(args, "no_default_keys", False):
+        pool.extend(DEFAULT_MF_KEYS)
+
+    manual_keys = getattr(args, "key", None) or []
+    for key_hex in manual_keys:
+        key_bytes = _normalize_key_hex(key_hex)
+        if key_bytes is None:
+            raise ArgsParserError(f"Invalid key format: {key_hex}")
+        if key_bytes not in pool:
+            pool.insert(0, key_bytes)
+
+    key_file = getattr(args, "k", None)
+    if key_file:
+        for line in key_file:
+            key_bytes = _normalize_key_hex(line)
+            if key_bytes and key_bytes not in pool:
+                pool.append(key_bytes)
+    return pool
+
+
+def _try_auth_read_trailer(
+    cmd: pn532_cmd.Pn532CMD, trailer_block: int, key: bytes, key_type: MfcKeyType
+):
+    try:
+        resp = cmd.mf1_read_one_block(trailer_block, key_type, key)
+    except Exception:
+        return None
+    if (
+        resp
+        and hasattr(resp, "parsed")
+        and isinstance(resp.parsed, (bytes, bytearray))
+        and len(resp.parsed) == 16
+    ):
+        return bytes(resp.parsed)
+    return None
+
+
+def _try_auth_read_trailer_with_uid(
+    cmd: pn532_cmd.Pn532CMD,
+    trailer_block: int,
+    key: bytes,
+    key_type: MfcKeyType,
+    uid: bytes,
+):
+    try:
+        auth_ok = cmd.mf1_auth_one_key_block(trailer_block, key_type, key, uid)
+        if not auth_ok:
+            return None
+        data = struct.pack("!BBB", 0x01, MifareCommand.MfReadBlock, trailer_block)
+        resp = cmd.device.send_cmd_sync(Command.InDataExchange, data)
+        if resp and len(resp.data) >= 16:
+            parsed = bytes(resp.data[:16])
+            if key_type == MfcKeyType.A:
+                parsed = key + parsed[6:]
+            else:
+                parsed = parsed[0:10] + key
+            return parsed
+        return None
+    except Exception:
+        return None
+
+
+def _recover_staticnested_key(
+    cmd: pn532_cmd.Pn532CMD,
+    known_key: bytes,
+    known_block: int,
+    known_key_type: MfcKeyType,
+    target_block: int,
+    target_key_type: MfcKeyType,
+    show_raw: bool = False,
+):
+    datakey = b"\x00\x00" + known_key
+    session = cmd.read_userdef_staticnested(
+        datakey=datakey,
+        known_block=known_block,
+        known_key_type=int(known_key_type),
+        target_block=target_block,
+        target_key_type=int(target_key_type),
+    )
+    if not session:
+        return None, None
+    args_list = [
+        _fmt32(session["uid"]),
+        f"{session['key_type']:02X}",
+        _fmt32(session["nt0"]),
+        _fmt32(session["ks0"]),
+        _fmt32(session["nt1"]),
+        _fmt32(session["ks1"]),
+    ]
+    key_hex, output = _run_mfkey("staticnested", args_list, verbose=show_raw)
+    if key_hex:
+        return bytes.fromhex(key_hex), output
+    return None, output
+
+
+def _run_nestedattack_impl(cli_obj, args: argparse.Namespace):
+    if cli_obj.device_com.get_device_name() != "PN532Killer":
+        print(f"{CR}nestedattack requires PN532Killer firmware staticnested helper.{C0}")
+        return {}, ["device is not PN532Killer"], False
+
+    known_key = _normalize_key_hex(args.known_key)
+    if known_key is None:
+        raise ArgsParserError("--known-key must be exactly 12 hex characters")
+    if args.known_block < 0 or args.known_block > 0xFF:
+        raise ArgsParserError("--known-block must be between 0 and 255")
+
+    known_type = MfcKeyType.B if args.known_key_type.upper() == "B" else MfcKeyType.A
+    show_raw = getattr(args, "show_raw", False) or pn532_com.DEBUG
+
+    scan = cli_obj.cmd.hf_14a_scan()
+    if scan is None or len(scan) == 0:
+        print("No tag found")
+        return {}, ["no tag found"], False
+    sak = int.from_bytes(scan[0]["sak"], "big")
+    sector_count = _sector_count_from_sak(sak)
+    if sector_count == 0:
+        print(f"{CR}Not a supported MIFARE Classic card (SAK=0x{sak:02X}).{C0}")
+        return {}, ["unsupported SAK"], False
+
+    start_sector = max(0, args.start_sector)
+    end_sector = (
+        sector_count - 1
+        if args.end_sector is None
+        else min(args.end_sector, sector_count - 1)
+    )
+    if start_sector > end_sector:
+        raise ArgsParserError("Invalid sector range")
+
+    known_sector = _sector_from_block(args.known_block)
+    if known_sector < 0 or known_sector >= sector_count:
+        raise ArgsParserError("--known-block does not belong to this card size")
+
+    known_pairs: dict[tuple[int, str], bytes] = {
+        (known_sector, args.known_key_type.upper()): known_key
+    }
+    failures: list[str] = []
+    unsupported_static_nonce = False
+
+    if args.target_key_type.lower() == "both":
+        wanted_types = ["A", "B"]
+    else:
+        wanted_types = [args.target_key_type.upper()]
+
+    print(f"UID: {scan[0]['uid'].hex().upper()} | sectors: {sector_count}")
+    print(
+        f"Known seed: sector {known_sector:02d} key {args.known_key_type.upper()} = {known_key.hex().upper()}"
+    )
+
+    for sector in range(start_sector, end_sector + 1):
+        target_block = _trailer_block_for_sector(sector)
+        for target_letter in wanted_types:
+            if (sector, target_letter) in known_pairs:
+                continue
+            target_type = MfcKeyType.A if target_letter == "A" else MfcKeyType.B
+
+            seed_items = list(known_pairs.items())
+            recovered = None
+            for (seed_sector, seed_letter), seed_key in seed_items:
+                seed_block = _trailer_block_for_sector(seed_sector)
+                seed_type = MfcKeyType.A if seed_letter == "A" else MfcKeyType.B
+                key_bytes, output = _recover_staticnested_key(
+                    cli_obj.cmd,
+                    known_key=seed_key,
+                    known_block=seed_block,
+                    known_key_type=seed_type,
+                    target_block=target_block,
+                    target_key_type=target_type,
+                    show_raw=show_raw,
+                )
+                if show_raw and output:
+                    for line in output.strip().splitlines():
+                        print(f"    {line}")
+                if output and "unsupported static tag nonce" in output.lower():
+                    unsupported_static_nonce = True
+                    print(
+                        f"{CR}Card nonce is not compatible with staticnested helper. Use hf mf mfoc / mfkey workflows for non-static PRNG tags.{C0}"
+                    )
+                    break
+                if key_bytes:
+                    recovered = key_bytes
+                    break
+
+            if unsupported_static_nonce:
+                break
+
+            if recovered:
+                known_pairs[(sector, target_letter)] = recovered
+                print(f"Sector {sector:02d} Key{target_letter}: {CG}{recovered.hex().upper()}{C0}")
+            else:
+                failures.append(f"sector {sector:02d} key {target_letter}")
+                print(f"Sector {sector:02d} Key{target_letter}: {CR}not found{C0}")
+                if args.stop_on_fail:
+                    break
+        if args.stop_on_fail and failures:
+            break
+        if unsupported_static_nonce:
+            break
+
+    print("\nRecovered keys summary:")
+    for sector in range(start_sector, end_sector + 1):
+        key_a = known_pairs.get((sector, "A"))
+        key_b = known_pairs.get((sector, "B"))
+        ka = key_a.hex().upper() if key_a else "------------"
+        kb = key_b.hex().upper() if key_b else "------------"
+        print(f"  Sector {sector:02d} | A={ka} | B={kb}")
+
+    if failures:
+        print(f"{CY}Missing {len(failures)} key(s): {', '.join(failures)}{C0}")
+
+    return known_pairs, failures, unsupported_static_nonce
+
+
+def _card_profile_from_scan(scan):
+    if scan is None or len(scan) == 0:
+        return None
+    uid = scan[0]["uid"]
+    sak = int.from_bytes(scan[0]["sak"], "big")
+    sector_count = _sector_count_from_sak(sak)
+    if sector_count == 0:
+        return None
+    block_count = _block_count_from_sector_count(sector_count)
+    return {
+        "uid": uid,
+        "sak": sak,
+        "sector_count": sector_count,
+        "block_count": block_count,
+    }
+
+
+def _discover_sector_keys(
+    cmd: pn532_cmd.Pn532CMD,
+    key_pool: list[bytes],
+    start_sector: int,
+    end_sector: int,
+    uid: Union[bytes, None] = None,
+    print_progress: bool = True,
+):
+    sector_keys: dict[int, dict[str, Union[bytes, None]]] = {
+        s: {"A": None, "B": None} for s in range(start_sector, end_sector + 1)
+    }
+
+    for sector in range(start_sector, end_sector + 1):
+        trailer = _trailer_block_for_sector(sector)
+        trailer_a = None
+        found_a = None
+
+        for key in key_pool:
+            if uid is not None:
+                trailer_a = _try_auth_read_trailer_with_uid(cmd, trailer, key, MfcKeyType.A, uid)
+            else:
+                trailer_a = _try_auth_read_trailer(cmd, trailer, key, MfcKeyType.A)
+            if trailer_a:
+                found_a = key
+                break
+
+        if found_a:
+            sector_keys[sector]["A"] = found_a
+            maybe_b = trailer_a[10:16]
+            if maybe_b != b"\x00" * 6:
+                sector_keys[sector]["B"] = maybe_b
+                _prepend_unique_keys(key_pool, [found_a, maybe_b])
+            else:
+                _prepend_unique_keys(key_pool, [found_a])
+
+        if sector_keys[sector]["B"] is None:
+            for key in key_pool:
+                if uid is not None:
+                    trailer_b = _try_auth_read_trailer_with_uid(cmd, trailer, key, MfcKeyType.B, uid)
+                else:
+                    trailer_b = _try_auth_read_trailer(cmd, trailer, key, MfcKeyType.B)
+                if trailer_b:
+                    sector_keys[sector]["B"] = key
+                    maybe_a = trailer_b[0:6]
+                    if maybe_a != b"\x00" * 6:
+                        sector_keys[sector]["A"] = sector_keys[sector]["A"] or maybe_a
+                        _prepend_unique_keys(key_pool, [key, maybe_a])
+                    else:
+                        _prepend_unique_keys(key_pool, [key])
+                    break
+
+        if print_progress:
+            ka = sector_keys[sector]["A"]
+            kb = sector_keys[sector]["B"]
+            ka_text = ka.hex().upper() if isinstance(ka, bytes) else "------------"
+            kb_text = kb.hex().upper() if isinstance(kb, bytes) else "------------"
+            print(f"Sector {sector:02d} keys: A={ka_text} B={kb_text}")
+
+    return sector_keys
+
+
+def _pick_seed_from_sector_keys(sector_keys: dict[int, dict[str, Union[bytes, None]]]):
+    for sector in sorted(sector_keys.keys()):
+        key_a = sector_keys[sector].get("A")
+        if isinstance(key_a, bytes):
+            return _trailer_block_for_sector(sector), "A", key_a
+        key_b = sector_keys[sector].get("B")
+        if isinstance(key_b, bytes):
+            return _trailer_block_for_sector(sector), "B", key_b
+    return None
+
+
+def _dump_with_sector_keys(
+    cmd: pn532_cmd.Pn532CMD,
+    uid: bytes,
+    block_count: int,
+    sector_keys: dict[int, dict[str, Union[bytes, None]]],
+    key_pool: list[bytes],
+):
+    dump_blocks: dict[int, Union[bytes, None]] = {}
+    missing_blocks: list[int] = []
+
+    for block in range(block_count):
+        sector = _sector_from_block(block)
+        candidates = []
+        key_a = sector_keys.get(sector, {}).get("A")
+        key_b = sector_keys.get(sector, {}).get("B")
+        if isinstance(key_a, bytes):
+            candidates.append((MfcKeyType.A, key_a))
+        if isinstance(key_b, bytes):
+            candidates.append((MfcKeyType.B, key_b))
+        if not candidates:
+            candidates.extend([(MfcKeyType.A, key) for key in key_pool])
+            candidates.extend([(MfcKeyType.B, key) for key in key_pool])
+
+        block_data = None
+        for key_type, key in candidates:
+            resp = cmd.mf1_read_one_block(block, key_type, key)
+            if (
+                resp
+                and hasattr(resp, "parsed")
+                and isinstance(resp.parsed, (bytes, bytearray))
+                and len(resp.parsed) == 16
+            ):
+                block_data = bytes(resp.parsed)
+                break
+
+        dump_blocks[block] = block_data
+        if block_data is None:
+            missing_blocks.append(block)
+            print(f"{block:03d}: {CR}<unreadable>{C0}")
+            continue
+
+        line = block_data.hex().upper()
+        if block == 0:
+            if len(uid) == 7:
+                print(f"{block:03d}: {CY}{line[0:14]}{C0}{line[14:]}{C0}")
+            else:
+                print(
+                    f"{block:03d}: {CY}{line[0:8]}{CR}{line[8:10]}{CG}{line[10:12]}{CY}{line[12:16]}{C0}{line[16:]}{C0}"
+                )
+        elif is_trailer_block(block):
+            print(f"{block:03d}: {CG}{line[0:12]}{CR}{line[12:20]}{CG}{line[20:]}{C0}")
+        else:
+            print(f"{block:03d}: {line}")
+
+    return dump_blocks, missing_blocks
+
+
 def check_tools():
-    tools = ["staticnested", "nested", "darkside", "mfkey32v2", "mfkey64"]
+    tools = ["staticnested", "mfkey32v2", "mfkey64"]
     if sys.platform == "win32":
         tools = [x + ".exe" for x in tools]
     missing_tools = [tool for tool in tools if not (default_cwd / tool).exists()]
@@ -1360,6 +1797,7 @@ class HWConnect(BaseCLIUnit):
                 
             self.device_com.open(args.port)
             print("Device:", self.device_com.get_device_name())
+            print("Connection:", self.device_com.get_connection_info())
         except Exception as e:
             print(f"{CR}PN532 Connect fail: {str(e)}{C0}")
             self.device_com.close()
@@ -1973,6 +2411,7 @@ class HfMfCview(DeviceRequiredUnit):
         return parser
 
     def on_exec(self, args: argparse.Namespace):
+        start_time = time.perf_counter()
         result = self.cmd.hfmf_cview()
         if result is None:
             return
@@ -2005,6 +2444,9 @@ class HfMfCview(DeviceRequiredUnit):
                 for block in result["blocks"].values():
                     f.write(bytes.fromhex(block))
                 print(f"Dump saved to {fileName}.bin")
+
+        elapsed = time.perf_counter() - start_time
+        print(f"Read time: {elapsed:.2f}s")
 
 @hf_mf.command("dump")
 class HfMfDump(DeviceRequiredUnit):
@@ -2409,11 +2851,622 @@ class HfMfMfkey32v2(DeviceRequiredUnit):
             idx += 1
 
 
+@hf_mf.command("chk")
+class HfMfChk(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Check MIFARE Classic sector keys using dictionary candidates."
+        parser.add_argument(
+            "-k",
+            metavar="<file>",
+            type=argparse.FileType("r"),
+            required=False,
+            help="Optional key dictionary file (one 12-hex key per line)",
+        )
+        parser.add_argument(
+            "--key",
+            action="append",
+            default=[],
+            metavar="<hex>",
+            help="Add a known key (can be repeated)",
+        )
+        parser.add_argument(
+            "--no-default-keys",
+            action="store_true",
+            help="Disable built-in default key dictionary",
+        )
+        parser.add_argument(
+            "--start-sector",
+            type=int,
+            default=0,
+            help="Start sector for key checking",
+        )
+        parser.add_argument(
+            "--end-sector",
+            type=int,
+            default=None,
+            help="End sector for key checking (default: card max)",
+        )
+        parser.add_argument(
+            "--dump-keys",
+            metavar="<file>",
+            help="Save discovered sector keys to a text file",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        _run_chk_workflow(self, args)
+
+
+def _run_chk_workflow(
+    cli_obj: DeviceRequiredUnit,
+    args: argparse.Namespace,
+    alias_name: Union[str, None] = None,
+):
+    if alias_name:
+        print(
+            f"{CY}hf mf {alias_name} is kept for PM3 compatibility and currently maps to hf mf chk.{C0}"
+        )
+
+    key_pool = _build_key_pool(args)
+    if len(key_pool) == 0:
+        raise ArgsParserError("No candidate keys available")
+
+    scan = cli_obj.cmd.hf_14a_scan()
+    profile = _card_profile_from_scan(scan)
+    if profile is None:
+        print("No supported MIFARE Classic tag found")
+        return
+
+    sector_count = profile["sector_count"]
+    start_sector = max(0, args.start_sector)
+    end_sector = sector_count - 1 if args.end_sector is None else min(args.end_sector, sector_count - 1)
+    if start_sector > end_sector:
+        raise ArgsParserError("Invalid sector range")
+
+    print(f"UID: {profile['uid'].hex().upper()} | sectors: {sector_count}")
+    print(f"Candidate keys: {len(key_pool)}")
+    sector_keys = _discover_sector_keys(
+        cli_obj.cmd,
+        key_pool,
+        start_sector,
+        end_sector,
+        uid=profile["uid"],
+        print_progress=True,
+    )
+
+    missing = []
+    print("\nKey check summary:")
+    for sector in range(start_sector, end_sector + 1):
+        key_a = sector_keys[sector]["A"]
+        key_b = sector_keys[sector]["B"]
+        ka = key_a.hex().upper() if isinstance(key_a, bytes) else "------------"
+        kb = key_b.hex().upper() if isinstance(key_b, bytes) else "------------"
+        print(f"  Sector {sector:02d} | A={ka} | B={kb}")
+        if not isinstance(key_a, bytes) or not isinstance(key_b, bytes):
+            missing.append(sector)
+
+    if args.dump_keys:
+        out_path = Path(args.dump_keys).expanduser()
+        with open(out_path, "w") as f:
+            for sector in range(start_sector, end_sector + 1):
+                key_a = sector_keys[sector]["A"]
+                key_b = sector_keys[sector]["B"]
+                ka = key_a.hex().upper() if isinstance(key_a, bytes) else "------------"
+                kb = key_b.hex().upper() if isinstance(key_b, bytes) else "------------"
+                f.write(f"{sector:02d} A {ka}\n")
+                f.write(f"{sector:02d} B {kb}\n")
+        print(f"{CG}Key report saved to {out_path}{C0}")
+
+    if missing:
+        print(f"{CY}Sectors with missing key(s): {', '.join(str(s) for s in missing)}{C0}")
+    else:
+        print(f"{CG}All keys found for selected range.{C0}")
+
+
+@hf_mf.command("fchk")
+class HfMfFchk(HfMfChk):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = super().args_parser()
+        parser.description = "PM3-compatible alias of hf mf chk."
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        _run_chk_workflow(self, args, alias_name="fchk")
+
+
+@hf_mf.command("brute")
+class HfMfBrute(HfMfChk):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = super().args_parser()
+        parser.description = "PM3-style brute dictionary check alias (maps to hf mf chk)."
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        _run_chk_workflow(self, args, alias_name="brute")
+
+
+@hf_mf.command("autopwn")
+class HfMfAutopwn(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Automatic key recovery and dump workflow for MIFARE Classic."
+        parser.add_argument(
+            "-k",
+            metavar="<file>",
+            type=argparse.FileType("r"),
+            required=False,
+            help="Optional key dictionary file (one 12-hex key per line)",
+        )
+        parser.add_argument(
+            "--key",
+            action="append",
+            default=[],
+            metavar="<hex>",
+            help="Add a known key (can be repeated)",
+        )
+        parser.add_argument(
+            "--no-default-keys",
+            action="store_true",
+            help="Disable built-in default key dictionary",
+        )
+        parser.add_argument(
+            "-O",
+            "--output",
+            dest="output_path",
+            metavar="<file>",
+            help="Save dump to binary file (.mfd/.bin)",
+        )
+        parser.add_argument(
+            "--show-missing",
+            action="store_true",
+            help="Print unreadable blocks at the end",
+        )
+        parser.add_argument(
+            "--known-key",
+            metavar="<hex>",
+            help="Optional seed key for static-nested stage (12 hex)",
+        )
+        parser.add_argument(
+            "--known-block",
+            type=int,
+            default=0,
+            help="Seed block for static-nested stage (default: 0)",
+        )
+        parser.add_argument(
+            "--known-key-type",
+            choices=["A", "a", "B", "b"],
+            default="A",
+            help="Seed key type (default: A)",
+        )
+        parser.add_argument(
+            "--skip-nested",
+            action="store_true",
+            help="Skip static-nested recovery stage",
+        )
+        parser.add_argument(
+            "--show-raw",
+            action="store_true",
+            help="Show static-nested helper output",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        key_pool = _build_key_pool(args)
+        if len(key_pool) == 0:
+            raise ArgsParserError("No candidate keys available")
+
+        scan = self.cmd.hf_14a_scan()
+        profile = _card_profile_from_scan(scan)
+        if profile is None:
+            print("No supported MIFARE Classic tag found")
+            return
+
+        uid = profile["uid"]
+        sector_count = profile["sector_count"]
+        block_count = profile["block_count"]
+
+        print(f"UID: {uid.hex().upper()} | sectors: {sector_count} | blocks: {block_count}")
+        print(f"Candidate keys: {len(key_pool)}")
+
+        sector_keys = _discover_sector_keys(
+            self.cmd,
+            key_pool,
+            0,
+            sector_count - 1,
+            uid=uid,
+            print_progress=True,
+        )
+
+        missing_key_slots = []
+        for sector in range(sector_count):
+            if not isinstance(sector_keys[sector]["A"], bytes):
+                missing_key_slots.append((sector, "A"))
+            if not isinstance(sector_keys[sector]["B"], bytes):
+                missing_key_slots.append((sector, "B"))
+
+        if missing_key_slots and (not args.skip_nested):
+            if self.device_com.get_device_name() != "PN532Killer":
+                print(f"{CY}Static-nested stage skipped: PN532Killer required.{C0}")
+            else:
+                seed_block = None
+                seed_key_type = None
+                seed_key = None
+                if args.known_key:
+                    seed_key = _normalize_key_hex(args.known_key)
+                    if seed_key is None:
+                        raise ArgsParserError("--known-key must be exactly 12 hex characters")
+                    seed_block = args.known_block
+                    seed_key_type = args.known_key_type
+                else:
+                    auto_seed = _pick_seed_from_sector_keys(sector_keys)
+                    if auto_seed is not None:
+                        seed_block, seed_key_type, seed_key = auto_seed
+
+                if seed_key is None:
+                    print(f"{CY}No seed key available for nested stage. Provide --known-key/--known-block.{C0}")
+                else:
+                    print(
+                        f"{CY}Running static-nested stage from block {seed_block} key {seed_key_type}={seed_key.hex().upper()}{C0}"
+                    )
+                    nested_args = argparse.Namespace(
+                        known_key=seed_key.hex().upper(),
+                        known_block=seed_block,
+                        known_key_type=seed_key_type,
+                        target_key_type="both",
+                        start_sector=0,
+                        end_sector=sector_count - 1,
+                        stop_on_fail=False,
+                        show_raw=args.show_raw,
+                    )
+                    known_pairs, _, _ = _run_nestedattack_impl(self, nested_args)
+                    for (sector, key_letter), key_bytes in known_pairs.items():
+                        if isinstance(key_bytes, bytes):
+                            sector_keys[sector][key_letter] = key_bytes
+                            _prepend_unique_keys(key_pool, [key_bytes])
+
+        print("\nDumping card blocks:")
+        dump_blocks, missing_blocks = _dump_with_sector_keys(
+            self.cmd,
+            uid,
+            block_count,
+            sector_keys,
+            key_pool,
+        )
+
+        if args.output_path:
+            out_path = Path(args.output_path).expanduser()
+            with open(out_path, "wb") as f:
+                for block in range(block_count):
+                    data = dump_blocks[block]
+                    f.write(data if isinstance(data, bytes) else b"\x00" * 16)
+            print(f"{CG}Dump saved to {out_path}{C0}")
+
+        if missing_blocks:
+            print(f"{CY}Unreadable blocks: {len(missing_blocks)}/{block_count}{C0}")
+            if args.show_missing:
+                print("Missing block indexes:", ", ".join(str(i) for i in missing_blocks))
+        else:
+            print(f"{CG}All blocks read successfully.{C0}")
+
+
+@hf_mf.command("darkside")
+class HfMfDarkside(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Darkside-like automatic recovery entry (uses available sniff/mfkey paths)."
+        parser.add_argument(
+            "--show-raw",
+            action="store_true",
+            help="Display captured tuples and helper outputs",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        print(f"{CY}Trying no-card nonce path (mfkey32v2)...{C0}")
+        unit32 = HfMfMfkey32v2()
+        unit32.device_com = self.device_com
+        before = len(self.cmd.hf_sniff_get_mfkey_entries(with_card=False))
+        unit32.on_exec(argparse.Namespace(show_raw=args.show_raw))
+        after = len(self.cmd.hf_sniff_get_mfkey_entries(with_card=False))
+        if before >= 2 or after >= 2:
+            return
+
+        print(f"{CY}No sufficient no-card tuples, trying card-present path (mfkey64)...{C0}")
+        unit64 = HfMfMfkey64()
+        unit64.device_com = self.device_com
+        unit64.on_exec(argparse.Namespace(show_raw=args.show_raw))
+        print(
+            f"{CY}Note: native darkside nonce acquisition is not wired yet; this command currently orchestrates available mfkey pipelines.{C0}"
+        )
+
+
+@hf_mf.command("hardnested")
+class HfMfHardnested(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Hardnested fallback entry (currently routes to nestedattack pipeline)."
+        parser.add_argument(
+            "--known-key",
+            required=True,
+            metavar="<hex>",
+            help="Known 6-byte key for a reference block",
+        )
+        parser.add_argument(
+            "--known-block",
+            required=True,
+            type=int,
+            metavar="<dec>",
+            help="Reference block that uses --known-key",
+        )
+        parser.add_argument(
+            "--known-key-type",
+            choices=["A", "a", "B", "b"],
+            default="A",
+            help="Reference key type (default: A)",
+        )
+        parser.add_argument(
+            "--target-key-type",
+            choices=["A", "a", "B", "b", "both"],
+            default="both",
+            help="Key type to recover (default: both)",
+        )
+        parser.add_argument(
+            "--start-sector",
+            type=int,
+            default=0,
+            help="Start sector for attack range",
+        )
+        parser.add_argument(
+            "--end-sector",
+            type=int,
+            default=None,
+            help="End sector for attack range (default: card max)",
+        )
+        parser.add_argument(
+            "--stop-on-fail",
+            action="store_true",
+            help="Stop immediately when one target key fails",
+        )
+        parser.add_argument(
+            "--show-raw",
+            action="store_true",
+            help="Print staticnested helper output",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        print(
+            f"{CY}hardnested native solver is not integrated yet; running nestedattack fallback pipeline.{C0}"
+        )
+        _run_nestedattack_impl(self, args)
+
+
+@hf_mf.command("mfoc")
+class HfMfMfoc(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Project-built mfoc-like key recovery + dump (no external mfoc binary)."
+        parser.add_argument(
+            "-k",
+            metavar="<file>",
+            type=argparse.FileType("r"),
+            required=False,
+            help="Optional key dictionary file (one 12-hex key per line)",
+        )
+        parser.add_argument(
+            "--key",
+            action="append",
+            default=[],
+            metavar="<hex>",
+            help="Add a known key (can be repeated)",
+        )
+        parser.add_argument(
+            "--no-default-keys",
+            action="store_true",
+            help="Disable built-in default key dictionary",
+        )
+        parser.add_argument(
+            "-O",
+            "--output",
+            dest="output_path",
+            metavar="<file>",
+            help="Save dump to binary file (.mfd/.bin)",
+        )
+        parser.add_argument(
+            "--show-missing",
+            action="store_true",
+            help="Print unreadable blocks at the end",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        key_pool = _build_key_pool(args)
+        if len(key_pool) == 0:
+            raise ArgsParserError("No candidate keys available")
+
+        scan = self.cmd.hf_14a_scan()
+        if scan is None or len(scan) == 0:
+            print("No tag found")
+            return
+
+        uid = scan[0]["uid"]
+        sak = int.from_bytes(scan[0]["sak"], "big")
+        sector_count = _sector_count_from_sak(sak)
+        if sector_count == 0:
+            print(f"{CR}Not a supported MIFARE Classic card (SAK=0x{sak:02X}).{C0}")
+            return
+        block_count = _block_count_from_sector_count(sector_count)
+
+        print(f"UID: {uid.hex().upper()} | sectors: {sector_count} | blocks: {block_count}")
+        print(f"Candidate keys: {len(key_pool)}")
+
+        sector_keys: dict[int, dict[str, Union[bytes, None]]] = {
+            s: {"A": None, "B": None} for s in range(sector_count)
+        }
+
+        for sector in range(sector_count):
+            trailer = _trailer_block_for_sector(sector)
+            trailer_a = None
+            found_a = None
+            for key in key_pool:
+                trailer_a = _try_auth_read_trailer(self.cmd, trailer, key, MfcKeyType.A)
+                if trailer_a:
+                    found_a = key
+                    break
+            if found_a:
+                sector_keys[sector]["A"] = found_a
+                maybe_b = trailer_a[10:16]
+                if maybe_b != b"\x00" * 6:
+                    sector_keys[sector]["B"] = maybe_b
+                    _prepend_unique_keys(key_pool, [found_a, maybe_b])
+                else:
+                    _prepend_unique_keys(key_pool, [found_a])
+
+            if sector_keys[sector]["B"] is None:
+                for key in key_pool:
+                    trailer_b = _try_auth_read_trailer(self.cmd, trailer, key, MfcKeyType.B)
+                    if trailer_b:
+                        sector_keys[sector]["B"] = key
+                        maybe_a = trailer_b[0:6]
+                        if maybe_a != b"\x00" * 6:
+                            sector_keys[sector]["A"] = sector_keys[sector]["A"] or maybe_a
+                            _prepend_unique_keys(key_pool, [key, maybe_a])
+                        else:
+                            _prepend_unique_keys(key_pool, [key])
+                        break
+
+            ka = sector_keys[sector]["A"]
+            kb = sector_keys[sector]["B"]
+            ka_text = ka.hex().upper() if isinstance(ka, bytes) else "------------"
+            kb_text = kb.hex().upper() if isinstance(kb, bytes) else "------------"
+            print(f"Sector {sector:02d} keys: A={ka_text} B={kb_text}")
+
+        dump_blocks: dict[int, Union[bytes, None]] = {}
+        missing_blocks: list[int] = []
+        for block in range(block_count):
+            sector = _sector_from_block(block)
+            candidates = []
+            key_a = sector_keys[sector]["A"]
+            key_b = sector_keys[sector]["B"]
+            if isinstance(key_a, bytes):
+                candidates.append((MfcKeyType.A, key_a))
+            if isinstance(key_b, bytes):
+                candidates.append((MfcKeyType.B, key_b))
+            if not candidates:
+                candidates.extend([(MfcKeyType.A, key) for key in key_pool])
+                candidates.extend([(MfcKeyType.B, key) for key in key_pool])
+
+            block_data = None
+            for key_type, key in candidates:
+                resp = self.cmd.mf1_read_one_block(block, key_type, key)
+                if (
+                    resp
+                    and hasattr(resp, "parsed")
+                    and isinstance(resp.parsed, (bytes, bytearray))
+                    and len(resp.parsed) == 16
+                ):
+                    block_data = bytes(resp.parsed)
+                    break
+
+            dump_blocks[block] = block_data
+            if block_data is None:
+                missing_blocks.append(block)
+                print(f"{block:03d}: {CR}<unreadable>{C0}")
+                continue
+
+            line = block_data.hex().upper()
+            if block == 0:
+                if len(uid) == 7:
+                    print(f"{block:03d}: {CY}{line[0:14]}{C0}{line[14:]}{C0}")
+                else:
+                    print(
+                        f"{block:03d}: {CY}{line[0:8]}{CR}{line[8:10]}{CG}{line[10:12]}{CY}{line[12:16]}{C0}{line[16:]}{C0}"
+                    )
+            elif is_trailer_block(block):
+                print(f"{block:03d}: {CG}{line[0:12]}{CR}{line[12:20]}{CG}{line[20:]}{C0}")
+            else:
+                print(f"{block:03d}: {line}")
+
+        if args.output_path:
+            out_path = Path(args.output_path).expanduser()
+            with open(out_path, "wb") as f:
+                for block in range(block_count):
+                    data = dump_blocks[block]
+                    f.write(data if isinstance(data, bytes) else b"\x00" * 16)
+            print(f"{CG}Dump saved to {out_path}{C0}")
+
+        if missing_blocks:
+            print(f"{CY}Unreadable blocks: {len(missing_blocks)}/{block_count}{C0}")
+            if args.show_missing:
+                print("Missing block indexes:", ", ".join(str(i) for i in missing_blocks))
+        else:
+            print(f"{CG}All blocks read successfully.{C0}")
+
+
+@hf_mf.command("nestedattack")
+class HfMfNestedattack(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Run static-nested attack recursively to recover multiple sector keys."
+        parser.add_argument(
+            "--known-key",
+            required=True,
+            metavar="<hex>",
+            help="Known 6-byte key for a reference block",
+        )
+        parser.add_argument(
+            "--known-block",
+            required=True,
+            type=int,
+            metavar="<dec>",
+            help="Reference block that uses --known-key",
+        )
+        parser.add_argument(
+            "--known-key-type",
+            choices=["A", "a", "B", "b"],
+            default="A",
+            help="Reference key type (default: A)",
+        )
+        parser.add_argument(
+            "--target-key-type",
+            choices=["A", "a", "B", "b", "both"],
+            default="both",
+            help="Key type to recover (default: both)",
+        )
+        parser.add_argument(
+            "--start-sector",
+            type=int,
+            default=0,
+            help="Start sector for attack range",
+        )
+        parser.add_argument(
+            "--end-sector",
+            type=int,
+            default=None,
+            help="End sector for attack range (default: card max)",
+        )
+        parser.add_argument(
+            "--stop-on-fail",
+            action="store_true",
+            help="Stop immediately when one target key fails",
+        )
+        parser.add_argument(
+            "--show-raw",
+            action="store_true",
+            help="Print staticnested helper output",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        _run_nestedattack_impl(self, args)
+
+
 @hf_mf.command("nested")
 class HfMfNested(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
-        parser.description = "Run a proxmark-style nested attack via mfoc"
+        parser.description = "Compat command: run built-in nestedattack flow (no external mfoc)."
         parser.add_argument("card", type=str, help="Card size flag (0/1/2/4 or 'o' for one-sector mode)")
         parser.add_argument("block", type=str, help="Known block index or '*' for auto search")
         parser.add_argument("key_type", type=str, choices=["A", "a", "B", "b"], help="Known key type")
@@ -2425,21 +3478,31 @@ class HfMfNested(DeviceRequiredUnit):
             help="Optional flags: d (dump), t (emulator transfer unsupported), s/ss (slow)"
         )
         parser.add_argument(
-            "--mfoc",
-            dest="mfoc_path",
-            help="Override mfoc executable path"
+            "--show-raw",
+            action="store_true",
+            help="Print staticnested helper output"
         )
         return parser
 
     def on_exec(self, args: argparse.Namespace):
-        known_key = args.key.upper()
-        if not re.fullmatch(r"[0-9A-F]{12}", known_key):
-            raise ArgsParserError("Key must include 12 HEX symbols")
+        if args.block in ("*", "auto"):
+            raise ArgsParserError("hf mf nested now requires a known block index; use hf mf mfoc for dictionary-based probing")
+        try:
+            known_block = int(args.block, 10)
+        except ValueError as exc:
+            raise ArgsParserError("block must be decimal") from exc
 
-        mfoc_path = args.mfoc_path or shutil.which("mfoc")
-        if not mfoc_path:
-            print(f"{CR}mfoc executable not found. Install mfoc and ensure it is in PATH or pass --mfoc <path>{C0}")
-            return
+        compat_args = argparse.Namespace(
+            known_key=args.key,
+            known_block=known_block,
+            known_key_type=args.key_type,
+            target_key_type="both",
+            start_sector=0,
+            end_sector=None,
+            stop_on_fail=("s" in (args.flags or "").lower()),
+            show_raw=args.show_raw,
+        )
+        _run_nestedattack_impl(self, compat_args)
 
 @hf_mf.command("wipe")
 class HfMfWipe(DeviceRequiredUnit):

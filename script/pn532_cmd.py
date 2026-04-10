@@ -424,6 +424,8 @@ class Pn532CMD:
         format_str = f"!BBB6s{len(uid)}s"
         data = struct.pack(format_str, 0x01, type_value, block, key, uid)
         resp = self.device.send_cmd_sync(Command.InDataExchange, data)
+        if resp is None or not hasattr(resp, "data") or len(resp.data) < 1:
+            return False
         return resp.data[0] == Status.HF_TAG_OK
 
     mf1_authenticated_sector = -1
@@ -499,7 +501,7 @@ class Pn532CMD:
             "!BBB16s", 0x01, MifareCommand.MfWriteBlock, block, block_data
         )
         resp = self.device.send_cmd_sync(Command.InDataExchange, data)
-        resp.parsed = resp.data[0] == Status.HF_TAG_OK
+        resp.parsed = len(resp.data) > 0 and resp.data[0] == Status.HF_TAG_OK
         return resp
 
     @expect_response(Status.HF_TAG_OK)
@@ -513,7 +515,7 @@ class Pn532CMD:
             "!BBB16s", 0x01, MifareCommand.MfWriteBlock, block, block_data
         )
         resp = self.device.send_cmd_sync(Command.InDataExchange, data)
-        resp.parsed = resp.data[0] == Status.HF_TAG_OK
+        resp.parsed = len(resp.data) > 0 and resp.data[0] == Status.HF_TAG_OK
         return resp
 
     @expect_response([Status.HF_TAG_OK, Status.HF_TAG_NO])
