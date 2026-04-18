@@ -80,7 +80,11 @@ class SerialCommunication(CommunicationInterface):
     
     def read(self, size: int = 1) -> bytes:
         if self.serial_instance:
-            return self.serial_instance.read(size)
+            # Low-latency read: avoid waiting for full `size` bytes when data is already available.
+            waiting = self.serial_instance.in_waiting
+            if waiting > 0:
+                return self.serial_instance.read(min(size, waiting))
+            return self.serial_instance.read(1 if size > 0 else 0)
         return b''
     
     def set_timeout(self, timeout: float) -> None:

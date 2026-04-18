@@ -71,13 +71,154 @@ class Pn532CLI:
         if not tree_node.cls:
             # Found tree node is a group without an implementation, print children
             print("".ljust(18, "-") + "".ljust(10) + "".ljust(30, "-"))
-            for child in tree_node.children:
+
+            def print_child_help(child):
                 cmd_title = f"{CG}{child.name}{C0}"
                 if not child.cls:
                     help_line = (f" - {cmd_title}".ljust(37)) + f"{{ {child.help_text}... }}"
                 else:
                     help_line = (f" - {cmd_title}".ljust(37)) + f"{child.help_text}"
                 print(help_line)
+
+            # Keep command paths flat, but present `hf mf` help in visual groups.
+            if tree_node.fullname == "hf mf":
+                grouped_sections = [
+                    (
+                        "[Read/Write Operations]",
+                        ["setuid", "wrbl", "wipe", "restore"],
+                    ),
+                    (
+                        "[Read/View]",
+                        ["rdbl", "cview", "dump"],
+                    ),
+                    (
+                        "[Cracking & Key Recovery]",
+                        [
+                            "autopwn",
+                            "chk",
+                            "darkside",
+                            "fchk",
+                            "hardnested",
+                            "mfkey32v2",
+                            "mfkey64",
+                            "mfoc",
+                            "nested",
+                            "nestedattack",
+                            "staticnested",
+                        ],
+                    ),
+                    (
+                        "[Emulator Slot Operations]",
+                        ["eRead", "eSetUid", "eLoad"],
+                    ),
+                    (
+                        "[Sniffer Helpers]",
+                        ["sniffer"],
+                    ),
+                ]
+                children_by_name = {child.name: child for child in tree_node.children}
+                printed = set()
+                printed_any_group = False
+                for title, group in grouped_sections:
+                    group_children = [children_by_name[name] for name in group if name in children_by_name]
+                    if not group_children:
+                        continue
+                    if printed_any_group:
+                        print("")
+                    print(f"{CY}{title}{C0}")
+                    for child in group_children:
+                        print_child_help(child)
+                        printed.add(child.name)
+                    printed_any_group = True
+                # Print any future commands not yet categorized.
+                for child in tree_node.children:
+                    if child.name in printed:
+                        continue
+                    if printed_any_group:
+                        print("")
+                        printed_any_group = False
+                    print_child_help(child)
+            elif tree_node.fullname == "hf mfu":
+                grouped_sections = [
+                    (
+                        "[Read/View]",
+                        ["rdbl", "dump"],
+                    ),
+                    (
+                        "[Write/Modify Operations]",
+                        ["wrbl", "setuid"],
+                    ),
+                ]
+                children_by_name = {child.name: child for child in tree_node.children}
+                printed = set()
+                printed_any_group = False
+                for title, group in grouped_sections:
+                    group_children = [children_by_name[name] for name in group if name in children_by_name]
+                    if not group_children:
+                        continue
+                    if printed_any_group:
+                        print("")
+                    print(f"{CY}{title}{C0}")
+                    for child in group_children:
+                        print_child_help(child)
+                        printed.add(child.name)
+                    printed_any_group = True
+                # Print any future commands not yet categorized.
+                for child in tree_node.children:
+                    if child.name in printed:
+                        continue
+                    if printed_any_group:
+                        print("")
+                        printed_any_group = False
+                    print_child_help(child)
+            elif tree_node.fullname == "hf 15":
+                grouped_sections = [
+                    (
+                        "[Read/View]",
+                        ["scan", "info", "rdbl", "dump"],
+                    ),
+                    (
+                        "[Write/Modify Operations]",
+                        ["wrbl"],
+                    ),
+                    (
+                        "[Raw/Utility]",
+                        ["raw"],
+                    ),
+                    (
+                        "[Magic Tag Operations]",
+                        ["gen1uid", "gen2uid", "gen2config"],
+                    ),
+                    (
+                        "[Emulator Slot Operations]",
+                        ["eSetUid", "eSetBlock", "eSetDump", "eSetwriteprotect", "eSetResvEasAfiDsfid"],
+                    ),
+                ]
+                children_by_name = {child.name: child for child in tree_node.children}
+                printed = set()
+                printed_any_group = False
+                for title, group in grouped_sections:
+                    group_children = [children_by_name[name] for name in group if name in children_by_name]
+                    if not group_children:
+                        continue
+                    if printed_any_group:
+                        print("")
+                    print(f"{CY}{title}{C0}")
+                    for child in group_children:
+                        print_child_help(child)
+                        printed.add(child.name)
+                    printed_any_group = True
+                # Print any future commands not yet categorized.
+                for child in tree_node.children:
+                    if child.name in printed:
+                        continue
+                    if printed_any_group:
+                        print("")
+                        printed_any_group = False
+                    print_child_help(child)
+            else:
+                for child in tree_node.children:
+                    print_child_help(child)
             return
 
         unit: pn532_cli_unit.BaseCLIUnit = tree_node.cls()
