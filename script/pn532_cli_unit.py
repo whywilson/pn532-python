@@ -430,6 +430,29 @@ def _card_profile_from_scan(scan):
     }
 
 
+def _require_mfc_profile(scan):
+    """Return MIFARE Classic profile if card matches; otherwise print a clear hint and return None."""
+    if scan is None or len(scan) == 0:
+        print("No tag found")
+        return None
+    profile = _card_profile_from_scan(scan)
+    if profile is not None:
+        return profile
+
+    sak = int.from_bytes(scan[0]["sak"], "big")
+    atqa = scan[0]["atqa"].hex().upper()
+    if sak == 0x00:
+        print(
+            f"{CR}Detected non-MIFARE Classic tag (SAK=0x00, ATQA={atqa}), likely Ultralight/NTAG.{C0}"
+        )
+        print(f"{CY}Try using: hf mfu rdbl / hf mfu dump{C0}")
+    else:
+        print(
+            f"{CR}Detected ISO14443-A tag is not a supported MIFARE Classic card (SAK=0x{sak:02X}, ATQA={atqa}).{C0}"
+        )
+    return None
+
+
 def _discover_sector_keys(
     cmd: pn532_cmd.Pn532CMD,
     key_pool: list[bytes],
@@ -578,8 +601,8 @@ hw_mode = hw.subgroup("mode", "Mode-related commands")
 hf = root.subgroup("hf", "High-frequency commands")
 hf_14a = hf.subgroup("14a", "ISO 14443-A commands")
 hf_mf = hf.subgroup("mf", "MIFARE Classic commands")
+hf_mf_sniffer = hf_mf.subgroup("sniffer", "MIFARE Classic sniffer helper commands")
 hf_mfu = hf.subgroup("mfu", "MIFARE Ultralight commands")
-hf_sniff = hf.subgroup("sniff", "Sniffer commands")
 
 hf_14b = hf.subgroup("14b", "ISO 14443-B commands")
 hf_15 = hf.subgroup("15", "ISO 15693 commands")
@@ -705,6 +728,35 @@ class DeviceRequiredUnit(BaseCLIUnit):
 
     def before_exec(self, args: argparse.Namespace):
         ret = self.device_com.isOpen()
+        if not ret:
+            last_port = getattr(self.device_com, "port_string", None)
+            if last_port:
+                try:
+                    print(f"{CY}Device offline, trying auto reconnect: {last_port}{C0}")
+                    self.device_com.open(last_port)
+                    ret = self.device_com.isOpen()
+                    if ret:
+                        print(f"{CG}Auto reconnect success.{C0}")
+                except Exception as e:
+                    print(f"{CR}Auto reconnect failed: {e}{C0}")
+                    ret = False
+
+        if not ret:
+            # Fallback: try the same auto-detect logic as `hw connect` when no last port is available.
+            try:
+                print(f"{CY}Device offline, trying auto connect...{C0}")
+                connector_cls = globals().get("HWConnect")
+                if connector_cls is not None:
+                    connector = connector_cls()
+                    connector.device_com = self.device_com
+                    connector.on_exec(argparse.Namespace(port=None))
+                    ret = self.device_com.isOpen()
+                    if ret:
+                        print(f"{CG}Auto connect success.{C0}")
+            except Exception as e:
+                print(f"{CR}Auto connect failed: {e}{C0}")
+                ret = False
+
         if ret:
             if not self.device_com.is_support_cmd(self.__class__.__name__):
                 print(
@@ -712,9 +764,9 @@ class DeviceRequiredUnit(BaseCLIUnit):
                 )
                 return False
             return True
-        else:
-            print("Please connect to pn532 device first(use 'hw connect').")
-            return False
+
+        print("Please connect to pn532 device first(use 'hw connect').")
+        return False
 
 
 class MF1AuthArgsUnit(DeviceRequiredUnit):
@@ -946,7 +998,7 @@ class HF14AScan(DeviceRequiredUnit):
 
     def scan(self):
         resp = self.cmd.hf_14a_scan()
-        if resp is not None:
+        if resp is not None and len(resp) > 0:
             for data_tag in resp:
                 print(f"- UID: {data_tag['uid'].hex().upper()}")
                 print(
@@ -958,7 +1010,7 @@ class HF14AScan(DeviceRequiredUnit):
                 if "ats" in data_tag and len(data_tag["ats"]) > 0:
                     print(f"- ATS: {data_tag['ats'].hex().upper()}")
         else:
-            print("ISO14443-A Tag no found")
+            print("ISO14443-A Tag not found")
 
     def on_exec(self, args: argparse.Namespace):
         self.scan()
@@ -2032,7 +2084,7 @@ class HWLedOff(DeviceRequiredUnit):
         print(f"LED off: {'Success' if ok else 'Fail'}")
 
 
-@hf_sniff.command("setuid")
+@hf_mf_sniffer.command("setuid")
 class HfSniffSetUid(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
@@ -2366,6 +2418,11 @@ class HfMfRdbl(MF1AuthArgsUnit):
         key: str = args.key
         if not re.match(r"^[a-fA-F0-9]{12}$", key):
             raise ArgsParserError("key must include 12 HEX symbols")
+
+        scan = self.cmd.hf_14a_scan()
+        if _require_mfc_profile(scan) is None:
+            return
+
         resp = self.cmd.mf1_read_one_block(block, key_type, bytes.fromhex(key))
 
         if resp is not None:
@@ -2389,11 +2446,11 @@ class HfMfWrbl(MF1WriteBlockArgsUnit):
             raise ArgsParserError("key must include 12 HEX symbols")
         if not re.match(r"^[a-fA-F0-9]{32}$", data):
             raise ArgsParserError("data must include 32 HEX symbols")
-        resp = self.cmd.hf_14a_scan()
-        if resp == None:
-            print("No tag found")
-            return resp
-        uid = resp[0]["uid"]
+        scan = self.cmd.hf_14a_scan()
+        profile = _require_mfc_profile(scan)
+        if profile is None:
+            return
+        uid = profile["uid"]
         resp = self.cmd.mf1_write_one_block(
             uid, args.blk, key_type, bytes.fromhex(key), bytes.fromhex(data)
         )
@@ -2973,17 +3030,6 @@ class HfMfFchk(HfMfChk):
 
     def on_exec(self, args: argparse.Namespace):
         _run_chk_workflow(self, args, alias_name="fchk")
-
-
-@hf_mf.command("brute")
-class HfMfBrute(HfMfChk):
-    def args_parser(self) -> ArgumentParserNoExit:
-        parser = super().args_parser()
-        parser.description = "PM3-style brute dictionary check alias (maps to hf mf chk)."
-        return parser
-
-    def on_exec(self, args: argparse.Namespace):
-        _run_chk_workflow(self, args, alias_name="brute")
 
 
 @hf_mf.command("autopwn")
@@ -3895,8 +3941,9 @@ class HfMfuRdbl(DeviceRequiredUnit):
     def on_exec(self, args: argparse.Namespace):
         block = args.blk
         resp = self.cmd.hf_14a_scan()
-        if resp == None:
+        if resp is None or len(resp) == 0:
             print("No tag found")
+            return
         resp = self.cmd.mf0_read_one_block(block)
 
         if resp is not None:
@@ -3948,9 +3995,9 @@ class HfMfuWrbl(DeviceRequiredUnit):
             print(f"{CY}Recommendation: only update the first 3 pages as a whole using the proper procedure/device, and only if you fully understand the process.{C0}")
             return
         resp = self.cmd.hf_14a_scan()
-        if resp == None:
+        if resp is None or len(resp) == 0:
             print("No tag found")
-            return resp
+            return
         resp = self.cmd.mf0_write_one_block(block, bytes.fromhex(data))
         if resp:
             print(f"Write block {block} with data {data}: {CG}Success{C0}")
@@ -3971,10 +4018,11 @@ class HfMfuDump(DeviceRequiredUnit):
         return parser
 
     def on_exec(self, args: argparse.Namespace):
+        start_time = time.perf_counter()
         resp = self.cmd.hf_14a_scan()
-        if resp == None:
+        if resp is None or len(resp) == 0:
             print("No tag found")
-            return resp
+            return
 
         uid = resp[0]["uid"]
         print(f" UID: {uid.hex().upper()}")
@@ -4023,6 +4071,9 @@ class HfMfuDump(DeviceRequiredUnit):
             else:
                 print(f"Block {block} Failed to read")
             block += 4
+
+        elapsed = time.perf_counter() - start_time
+        print(f"Read time: {elapsed:.2f}s")
 
 @hf_14a.command("gen4pwd")
 class Hf14aGen4Pwd(DeviceRequiredUnit):

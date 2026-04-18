@@ -39,6 +39,9 @@ class Pn532CMD:
         :param pn532: pn532 instance, @see pn532_device.Pn532
         """
         self.device = pn532
+        # For some firmware, Type2 reads via InDataExchange keep timing out.
+        # Flip this after the first failure to avoid repeating long timeouts in dumps.
+        self._mf0_prefer_raw = False
 
     @expect_response(Status.SUCCESS)
     def hf_14a_scan(self):
@@ -53,41 +56,77 @@ class Pn532CMD:
             timeout = 2  # 给网络模式多一点时间
         resp = self.device.send_cmd_sync(Command.InListPassiveTarget, b"\x01\x00", timeout=timeout)
         if resp.status == Status.SUCCESS:
-            # if len(resp.data) < 2:
-            #     resp.parsed = None
-            #     return resp
-            offset = 0
             data = []
-            while offset < len(resp.data):
-                tagType = resp.data[offset]
-                offset += 1
-                tagNum = resp.data[offset]
-                offset += 1
-                atqa, sak, uidlen = struct.unpack_from("!2s1sB", resp.data, offset)
-                offset += struct.calcsize("!2s1sB")
-                uid = resp.data[offset : offset + uidlen]
-                ats = resp.data[offset + uidlen :]
-                offset += uidlen
-                data.append(
-                    {
-                        "tagType": tagType,
-                        "tagNum": tagNum,
-                        "atqa": atqa,
-                        "sak": sak,
-                        "uid": uid,
-                        "ats": ats
-                    }
-                )
-                break
+            # InListPassiveTarget response starts with number of detected tags.
+            # For no-tag case firmware may only return b"\x00".
+            if len(resp.data) >= 1:
+                targets = resp.data[0]
+                offset = 1
+                for _ in range(targets):
+                    # Need at least Tg(1) + ATQA(2) + SAK(1) + UIDLen(1)
+                    if offset + 5 > len(resp.data):
+                        break
+                    tagNum = resp.data[offset]
+                    offset += 1
+                    atqa, sak, uidlen = struct.unpack_from("!2s1sB", resp.data, offset)
+                    offset += struct.calcsize("!2s1sB")
+                    if offset + uidlen > len(resp.data):
+                        break
+                    uid = resp.data[offset : offset + uidlen]
+                    offset += uidlen
+                    # Some tags include ATS length + ATS payload after UID.
+                    ats = b""
+                    if offset < len(resp.data):
+                        ats_len = resp.data[offset]
+                        if offset + 1 + ats_len <= len(resp.data):
+                            offset += 1
+                            ats = resp.data[offset : offset + ats_len]
+                            offset += ats_len
+                    data.append(
+                        {
+                            "tagType": targets,
+                            "tagNum": tagNum,
+                            "atqa": atqa,
+                            "sak": sak,
+                            "uid": uid,
+                            "ats": ats,
+                        }
+                    )
             resp.parsed = data
         return resp
 
     def mf0_read_one_block(self, block):
+        def _read_raw():
+            options = {
+                "activate_rf_field": 0,
+                "wait_response": 1,
+                "append_crc": 1,
+                "auto_select": 1,
+                "keep_rf_field": 0,
+                "check_response_crc": 0,
+            }
+            raw_resp = self.hf14a_raw(
+                options=options,
+                resp_timeout_ms=200,
+                data=[MifareCommand.MfReadBlock, block],
+            )
+            resp_raw = Response(Command.InCommunicateThru, Status.SUCCESS)
+            if isinstance(raw_resp, (bytes, bytearray)) and len(raw_resp) >= 16:
+                resp_raw.parsed = bytes(raw_resp[:16])
+            return resp_raw
+
+        if self._mf0_prefer_raw:
+            return _read_raw()
+
         data = struct.pack("!BBB", 0x01, MifareCommand.MfReadBlock, block)
-        resp = self.device.send_cmd_sync(Command.InDataExchange, data)
+        # Keep this probe timeout short; if unsupported, switch to raw path for the rest.
+        resp = self.device.send_cmd_sync(Command.InDataExchange, data, timeout=0.25)
         if len(resp.data) >= 16:
-            resp.parsed = resp.data
-        return resp
+            resp.parsed = resp.data[:16]
+            return resp
+
+        self._mf0_prefer_raw = True
+        return _read_raw()
 
     def mf0_write_one_block(self, block, data):
         data = struct.pack("!BBB4s", 0x01, MifareCommand.MfWrite4Bytes, block, data)
@@ -136,7 +175,7 @@ class Pn532CMD:
                     options["keep_rf_field"] = 0
                 resp_data = self.hf14a_raw(
                     options=options,
-                    resp_timeout_ms=1000,
+                    resp_timeout_ms=200,
                     data=[MifareCommand.MfReadBlock, block],
                 )  # 装饰器直接返回 parsed 数据（字节）
                 if len(resp_data) > 16:
@@ -215,7 +254,8 @@ class Pn532CMD:
 
         if cs.append_crc:
             data = bytes(data) + crc16A(bytes(data))
-        resp = self.device.send_cmd_sync(Command.InCommunicateThru, data, timeout=1)
+        timeout_s = max(0.05, float(resp_timeout_ms) / 1000.0)
+        resp = self.device.send_cmd_sync(Command.InCommunicateThru, data, timeout=timeout_s)
         resp.parsed = resp.data
         if cs.keep_rf_field == 0:
             self.device.halt()
