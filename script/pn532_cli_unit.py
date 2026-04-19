@@ -141,6 +141,10 @@ DEFAULT_MF_KEYS = [
     bytes.fromhex("96A301BCE267"),
 ]
 
+DEFAULT_MF_KEYS_FILE = (
+    Path(__file__).resolve().parent.parent / "third_party" / "mifare" / "dic" / "default.keys"
+)
+
 
 def _sector_count_from_sak(sak_byte: int) -> int:
     if sak_byte == 0x09:
@@ -199,10 +203,31 @@ def _prepend_unique_keys(dst: list[bytes], keys: list[bytes]):
         seen.add(key)
 
 
+def _load_keys_from_file_path(path: Path) -> list[bytes]:
+    keys: list[bytes] = []
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                key_bytes = _normalize_key_hex(line)
+                if key_bytes and key_bytes not in keys:
+                    keys.append(key_bytes)
+    except Exception:
+        return []
+    return keys
+
+
 def _build_key_pool(args: argparse.Namespace) -> list[bytes]:
     pool: list[bytes] = []
+    key_file = getattr(args, "k", None)
     if not getattr(args, "no_default_keys", False):
-        pool.extend(DEFAULT_MF_KEYS)
+        if key_file is None:
+            file_keys = _load_keys_from_file_path(DEFAULT_MF_KEYS_FILE)
+            if len(file_keys) > 0:
+                pool.extend(file_keys)
+            else:
+                pool.extend(DEFAULT_MF_KEYS)
+        else:
+            pool.extend(DEFAULT_MF_KEYS)
 
     manual_keys = getattr(args, "key", None) or []
     for key_hex in manual_keys:
@@ -212,7 +237,6 @@ def _build_key_pool(args: argparse.Namespace) -> list[bytes]:
         if key_bytes not in pool:
             pool.insert(0, key_bytes)
 
-    key_file = getattr(args, "k", None)
     if key_file:
         for line in key_file:
             key_bytes = _normalize_key_hex(line)
@@ -2532,18 +2556,15 @@ class HfMfDump(DeviceRequiredUnit):
             print(f"Type: {type_id_SAK_dict[int_sak]}")
 
     def on_exec(self, args: argparse.Namespace):
-        valid_keys = []
-        if args.k:
-            with open(args.k.name, "r") as key_file:
-                for line in key_file:
-                    mifare_key = line.strip()
-                    if re.match(r"^[a-fA-F0-9]{12}$", mifare_key):
-                        valid_keys.append(mifare_key)
+        start_time = time.perf_counter()
+        valid_keys = [k.hex().upper() for k in _build_key_pool(args)]
 
         print(f"Total keys: {CR}{len(valid_keys)}{C0}")
         resp = self.cmd.hf_14a_scan()
         if resp == None:
             print("No tag found")
+            elapsed = time.perf_counter() - start_time
+            print(f"Read time: {elapsed:.2f}s")
             return resp
         uid = resp[0]["uid"]
         print(f"UID: {uid.hex().upper()}")
@@ -2594,6 +2615,9 @@ class HfMfDump(DeviceRequiredUnit):
                         bin_file.write(bytes.fromhex(block_data))
         else:
             print(f"{CR}Not MiFare Classic{C0}")
+
+        elapsed = time.perf_counter() - start_time
+        print(f"Read time: {elapsed:.2f}s")
 
 @hf_mf.command("eRead")
 class HfMfEread(DeviceRequiredUnit):
