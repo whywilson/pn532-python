@@ -948,16 +948,12 @@ class HWModeEmulator(DeviceRequiredUnit):
         # Get emulator block 0 data and tag type
         emulator_data = self.cmd.get_emulator_block0_and_type(type=type, slot=slot - 1)
         if emulator_data is not None:
-            print(f"\n{CG}Slot {slot} Information:{C0}")
             tag_type = emulator_data.get('tag_type')
-            if tag_type is None:
-                print(f"  Tag Type: {CY}{emulator_data['tag_type_name']}{C0}")
-            else:
-                print(f"  Tag Type: {CY}{emulator_data['tag_type_name']}{C0} (0x{tag_type:02X})")
+            tag_type_name = emulator_data['tag_type_name']
+            print(f"\n{CG}{tag_type_name} Slot {slot}:{C0}")
             
             # For MIFARE Classic types, parse block 0 info
             if tag_type in [0x11, 0x12, 0x13, 0x14] or is_mfc_mode:
-                print(f"\n{CG}MIFARE Classic Block 0 Details:{C0}")
                 block0_bytes = emulator_data['block0']
                 if not isinstance(block0_bytes, (bytes, bytearray)) or len(block0_bytes) < 8:
                     print(f"  {CR}Insufficient block 0 data (len={len(block0_bytes) if isinstance(block0_bytes, (bytes, bytearray)) else 0}){C0}")
@@ -967,33 +963,23 @@ class HWModeEmulator(DeviceRequiredUnit):
                 bcc = block0_bytes[4]
                 sak = block0_bytes[5]
                 atqa = block0_bytes[6:8].hex().upper()
-                print(f"  UID:      {CY}{uid}{C0}")
-                print(f"  BCC:      {bcc:02X}")
-                print(f"  SAK:      {sak:02X}")
-                print(f"  ATQA:     {atqa}")
+                print(f"  UID:  {CY}{uid}{C0}")
+                print(f"  BCC:  {bcc:02X}")
+                print(f"  SAK:  {sak:02X}")
+                print(f"  ATQA: {atqa}")
             elif is_iso15693_mode or tag_type == 0x81:
                 system_pages = emulator_data.get('system_pages', {})
                 if system_pages:
                     uid_raw = system_pages.get("FE", b"")
                     if isinstance(uid_raw, (bytes, bytearray)) and len(uid_raw) >= 8:
-                        print(f"\n  UID: {CY}{uid_raw[::-1].hex().upper()}{C0}")
+                        print(f"  UID: {CY}{uid_raw[::-1].hex().upper()}{C0}")
             elif is_mfu_mode:
                 uid_pages = emulator_data.get('uid_pages', {})
                 p0 = uid_pages.get(0, b"\x00\x00\x00\x00")
                 p1 = uid_pages.get(1, b"\x00\x00\x00\x00")
-                p2 = uid_pages.get(2, b"\x00\x00\x00\x00")
-                print(f"\n{CG}MIFARE Ultralight UID Details:{C0}")
 
                 uid7 = bytes(p0[:3] + p1[:4])
-                bcc0 = p0[3]
-                bcc1 = p2[0]
-                calc_bcc0 = uid7[0] ^ uid7[1] ^ uid7[2] ^ 0x88
-                calc_bcc1 = uid7[3] ^ uid7[4] ^ uid7[5] ^ uid7[6]
-                bcc0_status = f"{CG}OK{C0}" if bcc0 == calc_bcc0 else f"{CR}BAD{C0}"
-                bcc1_status = f"{CG}OK{C0}" if bcc1 == calc_bcc1 else f"{CR}BAD{C0}"
-                print(f"  UID:    {CY}{uid7.hex().upper()}{C0}")
-                print(f"  BCC0:   {bcc0:02X} (calc {calc_bcc0:02X}) {bcc0_status}")
-                print(f"  BCC1:   {bcc1:02X} (calc {calc_bcc1:02X}) {bcc1_status}")
+                print(f"  UID: {CY}{uid7.hex().upper()}{C0}")
         else:
             print(f"{CR}Failed to read emulator data{C0}")
 

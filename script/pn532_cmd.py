@@ -1215,6 +1215,25 @@ class Pn532CMD:
         # Keep this path read-only for block 0 and rely on requested type as fallback.
         tag_type = None
 
+        # ISO15693 UID lives in system page FE. Avoid extra page reads when only UID is needed.
+        if type == 3:
+            transfer_slot = self._get_emulator_transfer_slot(type=3, slot=slot)
+            self.prepare_get_emulator_data(type=3, slot=transfer_slot)
+            sleep(0.02)
+            uid_page = self.download_data_block(type=3, slot=transfer_slot, index=0xFE00)
+            if uid_page is None:
+                return None
+
+            return {
+                'tag_type': None,
+                'requested_type': type,
+                'tag_type_name': requested_type_name_map.get(type, "Unknown"),
+                'block0': b"",
+                'system_pages': {
+                    'FE': uid_page,
+                },
+            }
+
         # Prepare to get emulator data and retry block 0 a few times.
         # Some firmware builds can return an empty frame right after mode switch.
         block0_data = None
@@ -1253,19 +1272,18 @@ class Pn532CMD:
             'block0': block0_data,
         }
 
-        if type == 3:
-            transfer_slot = self._get_emulator_transfer_slot(type=3, slot=slot)
-            self.prepare_get_emulator_data(type=3, slot=transfer_slot)
-            sleep(0.02)
-            result['system_pages'] = {
-                'FF': self.download_data_block(type=3, slot=transfer_slot, index=0xFF00),
-                'FE': self.download_data_block(type=3, slot=transfer_slot, index=0xFE00),
-                'FD': self.download_data_block(type=3, slot=transfer_slot, index=0xFD00),
-                'FC': self.download_data_block(type=3, slot=transfer_slot, index=0xFC00),
-                'FB': self.download_data_block(type=3, slot=transfer_slot, index=0xFB00),
+        if type == 2:
+            # Reuse already-read page 0 (block0_data) to avoid duplicate I/O in hw mode e.
+            uid_pages = {
+                0: block0_data[:4].ljust(4, b"\x00") if isinstance(block0_data, (bytes, bytearray)) else b"\x00\x00\x00\x00",
+                1: b"\x00\x00\x00\x00",
+                2: b"\x00\x00\x00\x00",
             }
-        elif type == 2:
-            result['uid_pages'] = self.hf_mfu_read_uid_pages(slot + 1)
+            for page in [1, 2]:
+                data = self.download_data_block(type=2, slot=slot, index=page)
+                if isinstance(data, (bytes, bytearray)) and len(data) > 0:
+                    uid_pages[page] = data[:4].ljust(4, b"\x00")
+            result['uid_pages'] = uid_pages
 
         return result
 

@@ -2,7 +2,7 @@ import argparse
 import colorama
 import ndef
 from functools import wraps
-from typing import Union, Callable, Any
+from typing import Union, Callable, Any, Optional
 from prompt_toolkit.completion import Completer, NestedCompleter, WordCompleter
 from prompt_toolkit.completion.base import Completion
 from prompt_toolkit.document import Document
@@ -271,69 +271,89 @@ class ArgparseCompleter(Completer):
 
     def __init__(self, parser) -> None:
         self.parser: ArgumentParserNoExit = parser
-
-    def check_tokens(self, parsed, unparsed):
-        suggestions = {}
-
-        def check_arg(tokens):
-            return tokens and tokens[0].startswith('-')
-
-        if not parsed and not unparsed:
-            # No tokens detected, just show all flags
-            for action in self.parser._actions:
-                for opt in action.option_strings:
-                    suggestions[opt] = action.help
-            return [], [], suggestions
-
-        token = unparsed.pop(0)
-
+        self._option_map = {}
         for action in self.parser._actions:
-            if any(opt == token for opt in action.option_strings):
-                # Argument fully matches the token
-                parsed.append(token)
+            for opt in action.option_strings:
+                self._option_map[opt] = action
 
-                if action.choices:
-                    # Autocomplete with choices
-                    if unparsed:
-                        # Autocomplete values
-                        value = unparsed.pop(0)
-                        for choice in action.choices:
-                            if str(choice).startswith(value):
-                                suggestions[str(choice)] = None
+    @staticmethod
+    def _value_count(action) -> Optional[int]:
+        if action.nargs in (None, 1, "?"):
+            return 1
+        if action.nargs == 0:
+            return 0
+        if isinstance(action.nargs, int):
+            return action.nargs
+        return None
 
-                        parsed.append(value)
+    def _suggest_options(self, prefix: str):
+        suggestions = {}
+        for action in self.parser._actions:
+            for opt in action.option_strings:
+                if opt.startswith(prefix):
+                    suggestions[opt] = action.help
+        return suggestions
 
-                        if check_arg(unparsed):
-                            parsed, unparsed, suggestions = self.check_tokens(
-                                parsed, unparsed)
+    @staticmethod
+    def _suggest_choices(action, prefix: str):
+        suggestions = {}
+        if not action.choices:
+            return suggestions
+        for choice in action.choices:
+            choice_text = str(choice)
+            if choice_text.startswith(prefix):
+                suggestions[choice_text] = None
+        return suggestions
 
-                    else:
-                        # Show all possible values
-                        for choice in action.choices:
-                            suggestions[str(choice)] = None
+    def _analyze_tokens(self, text: str):
+        tokens = text.split()
+        trailing_space = text.endswith(" ")
+        current_fragment = "" if trailing_space else (tokens.pop() if tokens else "")
+        expecting_action = None
+        remaining_values = 0
 
-                    break
-                else:
-                    # No choices, process further arguments
-                    if check_arg(unparsed):
-                        parsed, unparsed, suggestions = self.check_tokens(
-                            parsed, unparsed)
-                    break
-            elif any(opt.startswith(token) for opt in action.option_strings):
-                for opt in action.option_strings:
-                    if opt.startswith(token):
-                        suggestions[opt] = action.help
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
 
-        if suggestions:
-            unparsed.insert(0, token)
+            if expecting_action is not None and remaining_values != 0:
+                if token.startswith("-") and token in self._option_map:
+                    expecting_action = None
+                    remaining_values = 0
+                    continue
+                if remaining_values is not None:
+                    remaining_values -= 1
+                    if remaining_values <= 0:
+                        expecting_action = None
+                        remaining_values = 0
+                index += 1
+                continue
 
-        return parsed, unparsed, suggestions
+            action = self._option_map.get(token)
+            if action is not None:
+                expecting_action = action
+                remaining_values = self._value_count(action) or 0
+                if remaining_values == 0:
+                    expecting_action = None
+                index += 1
+                continue
+
+            index += 1
+
+        return expecting_action, current_fragment
+
+    def check_tokens(self, text: str):
+        expecting_action, current_fragment = self._analyze_tokens(text)
+        if expecting_action is not None and not current_fragment.startswith("-"):
+            suggestions = self._suggest_choices(expecting_action, current_fragment)
+            return suggestions
+        return self._suggest_options(current_fragment)
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         word_before_cursor = document.text_before_cursor.split(' ')[-1]
 
-        _, _, suggestions = self.check_tokens(list(), text.split())
+        suggestions = self.check_tokens(text)
 
         for key, suggestion in suggestions.items():
             yield Completion(key, -len(word_before_cursor), display=key, display_meta=suggestion)
