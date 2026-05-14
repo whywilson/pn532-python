@@ -991,20 +991,76 @@ class Pn532CMD:
         sleep(0.02)
         mifare_dump = {}
         for block in range(64):
-            resp = self.download_data_block(type = 1, slot = slot, index = block)
-            # resp is already bytes due to @expect_response decorator
+            block_data = self.download_data_block(type = 1, slot = slot, index = block)
             if block == 0:
                 print(
-                            f"block {block:02d}: {CY}{resp.hex()[0:8].upper()}{CR}{resp.hex()[8:10].upper()}{CG}{resp.hex()[10:14].upper()}{C0}{resp.hex()[14:].upper()}{C0}"
+                            f"block {block:02d}: {CY}{block_data.hex()[0:8].upper()}{CR}{block_data.hex()[8:10].upper()}{CG}{block_data.hex()[10:14].upper()}{C0}{block_data.hex()[14:].upper()}{C0}"
                         )
             elif block % 4 == 3:
                 print(
-                            f"block {block:02d}: {CG}{resp.hex()[0:12].upper()}{CR}{resp.hex()[12:20].upper()}{CG}{resp.hex()[20:].upper()}{C0}"
+                            f"block {block:02d}: {CG}{block_data.hex()[0:12].upper()}{CR}{block_data.hex()[12:20].upper()}{CG}{block_data.hex()[20:].upper()}{C0}"
                         )
             else:
-                print(f"block {block:02d}: {resp.hex().upper()}")
-            mifare_dump[block] = resp
+                print(f"block {block:02d}: {block_data.hex().upper()}")
+            mifare_dump[block] = block_data
         return mifare_dump
+
+    def _get_emulator_transfer_slot(self, type = 1, slot = 0):
+        slot_offset = {
+            1: 0x00,
+            2: 0x00,
+            3: 0x1A,
+            4: 0x12,
+        }
+        return slot + slot_offset.get(type, 0x00)
+
+    def _read_emulator_pages(self, type = 2, slot = 0, page_count = 0, start_index = 0, label = "page"):
+        transfer_slot = self._get_emulator_transfer_slot(type=type, slot=slot)
+        self.prepare_get_emulator_data(type=type, slot=transfer_slot)
+        sleep(0.02)
+
+        page_dump = {}
+        if page_count <= 0:
+            return page_dump
+
+        first_chunk = self.download_data_block(type=type, slot=transfer_slot, index=start_index)
+        if first_chunk is None:
+            return page_dump
+
+        # Some firmware returns 16 bytes per request (4 pages), others return 4 bytes per page.
+        stride = 4 if len(first_chunk) >= 16 else 1
+        total_end = start_index + page_count
+
+        for start_page in range(start_index, total_end, stride):
+            chunk = first_chunk if start_page == start_index else self.download_data_block(type=type, slot=transfer_slot, index=start_page)
+            if chunk is None:
+                continue
+            pages_in_chunk = min(4 if stride == 4 else 1, total_end - start_page)
+            for offset in range(0, pages_in_chunk):
+                page_index = start_page + offset
+                page_data = chunk[offset * 4 : (offset + 1) * 4]
+                if len(page_data) < 4:
+                    page_data = page_data.ljust(4, b"\x00")
+                print(f"{label} {page_index:02d}: {page_data.hex().upper()}")
+                page_dump[page_index] = page_data
+        return page_dump
+
+    def hf_mfu_read_uid_pages(self, slot):
+        """
+        Read MFU UID-related pages (0/1/2)
+
+        :param slot: slot number (1-8)
+        :return: dict with keys 0,1,2 and 4-byte page values
+        """
+        slot = slot - 1
+        transfer_slot = self._get_emulator_transfer_slot(type=2, slot=slot)
+        self.prepare_get_emulator_data(type=2, slot=transfer_slot)
+        sleep(0.02)
+        uid_pages = {}
+        for page in [0, 1, 2]:
+            data = self.download_data_block(type=2, slot=transfer_slot, index=page)
+            uid_pages[page] = data[:4].ljust(4, b"\x00") if data is not None else b"\x00\x00\x00\x00"
+        return uid_pages
 
     def hf_mfu_eread(self, slot):
         """
@@ -1014,31 +1070,55 @@ class Pn532CMD:
         :return:
         """
         slot = slot - 1
-        self.prepare_get_emulator_data(type = 2, slot = slot)
-        sleep(0.02)
-        mfu_dump = {}
-        # Read first 4 pages
         max_page = 64
-        for page in range(4):
-            resp = self.download_data_block(type = 2, slot = slot, index = page)
-            if page == 0:
-                print(f"page {page:02d}: {CY}{resp.parsed.hex()[0:6].upper()}{CR}{resp.parsed.hex()[6:8].upper()}{C0}")
-            elif page == 1:
-                print(f"page {page:02d}: {CY}{resp.parsed.hex().upper()}{C0}")
-            elif page == 2:
-                print(f"page {page:02d}: {CR}{resp.parsed.hex()[0:2].upper()}{CG}{resp.parsed.hex()[2:].upper()}{C0}")
-            elif page == 3:
-                print(f"page {page:02d}: {CG}{resp.parsed.hex().upper()}{C0}")
-                # page 3 , index 2 is the max page indicator
-                if len(resp.parsed) >= 3:
-                    max_page = resp.parsed[2] * 2 + 12
-            mfu_dump[page] = resp
-        # Read remaining pages
-        for page in range(4, max_page):
-            resp = self.download_data_block(type = 2, slot = slot, index = page)
-            print(f"page {page:02d}: {resp.parsed.hex().upper()}")
-            mfu_dump[page] = resp
+        initial_pages = self._read_emulator_pages(type=2, slot=slot, page_count=4)
+        if 3 in initial_pages and len(initial_pages[3]) >= 3:
+            max_page = initial_pages[3][2] * 2 + 12
+
+        if max_page <= 4:
+            return initial_pages
+
+        remaining_pages = self._read_emulator_pages(type=2, slot=slot, page_count=max_page - 4, start_index=4, label="page")
+        mfu_dump = dict(initial_pages)
+        for page_index, page_data in remaining_pages.items():
+            mfu_dump[page_index] = page_data
         return mfu_dump
+
+    def hf_15_eread(self, slot, block_count = 256):
+        """
+        ISO15693 emulator read to dump
+
+        :param slot: slot number
+        :param block_count: block count to read
+        :return:
+        """
+        slot = slot - 1
+        return self._read_emulator_pages(type=3, slot=slot, page_count=block_count, label="block")
+
+    def hf_15_read_system_pages(self, slot):
+        """
+        Read ISO15693 emulator system pages (FF/FE/FD/FC)
+
+        :param slot: slot number (1-8)
+        :return: dict of system page hex values
+        """
+        slot = slot - 1
+        transfer_slot = self._get_emulator_transfer_slot(type=3, slot=slot)
+        self.prepare_get_emulator_data(type=3, slot=transfer_slot)
+        sleep(0.02)
+
+        system_index_map = {
+            "FF": 0xFF00,
+            "FE": 0xFE00,
+            "FD": 0xFD00,
+            "FC": 0xFC00,
+            "FB": 0xFB00,
+        }
+        system_pages = {}
+        for key, index in system_index_map.items():
+            data = self.download_data_block(type=3, slot=transfer_slot, index=index)
+            system_pages[key] = data
+        return system_pages
 
     @expect_response(Status.SUCCESS)
     def upload_data_block(self, type = 1, slot = 0, index = 0, data : bytes = b""):
@@ -1103,13 +1183,7 @@ class Pn532CMD:
         """
         # Apply slot offset based on type
         # MFC: 0, MFU: 0, 15693: 0x1A, EM4100: 0x12
-        slot_offset = {
-            1: 0x00,    # MFC
-            2: 0x00,    # MFU
-            3: 0x1A,    # 15693
-            4: 0x12,    # EM4100
-        }
-        actual_slot = slot + slot_offset.get(type, 0x00)
+        actual_slot = self._get_emulator_transfer_slot(type=type, slot=slot)
         
         # 0x00 = read emulator slot info, actual_slot = slot number with offset
         data = struct.pack("!BB", 0x00, actual_slot)
@@ -1129,22 +1203,32 @@ class Pn532CMD:
         :param slot: slot number (0-7)
         :return: dict with 'type', 'block0' and 'type_name'
         """
-        # Get tag type first (returns parsed value due to @expect_response decorator)
-        tag_type = self.get_emulator_tag_type(type=type, slot=slot)
-        if tag_type is None:
+        requested_type_name_map = {
+            1: "MIFARE Classic",
+            2: "MIFARE Ultralight",
+            3: "ISO15693",
+            4: "EM4100",
+        }
+
+        # NOTE: On PN532Killer firmware, querying slot type via getEmulatorData(0x00)
+        # can poison subsequent dump reads in the same session (returns empty block data).
+        # Keep this path read-only for block 0 and rely on requested type as fallback.
+        tag_type = None
+
+        # Prepare to get emulator data and retry block 0 a few times.
+        # Some firmware builds can return an empty frame right after mode switch.
+        block0_data = None
+        for _ in range(3):
+            self.prepare_get_emulator_data(type=type, slot=slot)
+            sleep(0.02)
+            block0_data = self.download_data_block(type=type, slot=slot, index=0)
+            if block0_data:
+                break
+            sleep(0.03)
+
+        if block0_data is None:
             return None
-        
-        # Prepare to get emulator data
-        self.prepare_get_emulator_data(type=type, slot=slot)
-        sleep(0.02)
-        
-        # Download block 0
-        block0_resp = self.download_data_block(type=type, slot=slot, index=0)
-        if block0_resp is None:
-            return None
-        
-        block0_data = block0_resp
-        
+
         # Map tag type to name
         tag_type_map = {
             0x01: "NTAG 213",
@@ -1156,14 +1240,34 @@ class Pn532CMD:
             0x14: "MIFARE Classic 7B4K (ATQA: 0x4200, SAK: 0x18)",
             0x81: "ISO15693 (4 bytes/block)",
         }
+
+        if tag_type is not None:
+            type_name = tag_type_map.get(tag_type, f"Unknown (0x{tag_type:02X})")
+        else:
+            type_name = requested_type_name_map.get(type, "Unknown")
         
-        type_name = tag_type_map.get(tag_type, f"Unknown (0x{tag_type:02X})")
-        
-        return {
+        result = {
             'tag_type': tag_type,
+            'requested_type': type,
             'tag_type_name': type_name,
             'block0': block0_data,
         }
+
+        if type == 3:
+            transfer_slot = self._get_emulator_transfer_slot(type=3, slot=slot)
+            self.prepare_get_emulator_data(type=3, slot=transfer_slot)
+            sleep(0.02)
+            result['system_pages'] = {
+                'FF': self.download_data_block(type=3, slot=transfer_slot, index=0xFF00),
+                'FE': self.download_data_block(type=3, slot=transfer_slot, index=0xFE00),
+                'FD': self.download_data_block(type=3, slot=transfer_slot, index=0xFD00),
+                'FC': self.download_data_block(type=3, slot=transfer_slot, index=0xFC00),
+                'FB': self.download_data_block(type=3, slot=transfer_slot, index=0xFB00),
+            }
+        elif type == 2:
+            result['uid_pages'] = self.hf_mfu_read_uid_pages(slot + 1)
+
+        return result
 
     @expect_response(Status.SUCCESS)
     def ntag_emulator(self, url: str):

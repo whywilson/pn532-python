@@ -114,6 +114,22 @@ def _run_mfkey(name: str, args: list[str], verbose: bool = False):
     return key_hex, output
 
 
+def _save_emulator_dump_json(filename: str, slot: int, dump_type: str, key_name: str, dump_map: dict[int, bytes]):
+    json_data = {
+        "slot": slot,
+        "type": dump_type,
+        key_name: {index: block.hex().upper() for index, block in dump_map.items()},
+    }
+    with open(filename, "w") as f:
+        json.dump(json_data, f, indent=2)
+
+
+def _save_emulator_dump_bin(filename: str, dump_map: dict[int, bytes], item_count: int, item_size: int):
+    with open(filename, "wb") as f:
+        for index in range(item_count):
+            f.write(dump_map.get(index, b"\x00" * item_size))
+
+
 def _keytype_label(key_byte: int) -> str:
     return "A" if key_byte == 0x60 else "B"
 
@@ -922,22 +938,31 @@ class HWModeEmulator(DeviceRequiredUnit):
     def on_exec(self, args: argparse.Namespace):
         type = args.type
         slot = args.slot
+        is_mfc_mode = type == 1
+        is_mfu_mode = type == 2
+        is_iso15693_mode = type == 3
         self.device_com.set_work_mode(PN532KillerMode.EMULATOR, type, slot - 1)
         print("Switch to {  Emulator  } mode successfully.")
+        time.sleep(0.05)
         
         # Get emulator block 0 data and tag type
         emulator_data = self.cmd.get_emulator_block0_and_type(type=type, slot=slot - 1)
         if emulator_data is not None:
             print(f"\n{CG}Slot {slot} Information:{C0}")
-            print(f"  Tag Type: {CY}{emulator_data['tag_type_name']}{C0} (0x{emulator_data['tag_type']:02X})")
-            # block0_data is bytes, convert to hex if needed
-            block0_hex = emulator_data['block0'].hex().upper() if isinstance(emulator_data['block0'], bytes) else emulator_data['block0']
-            print(f"  Block 0:  {CG}{block0_hex}{C0}")
+            tag_type = emulator_data.get('tag_type')
+            if tag_type is None:
+                print(f"  Tag Type: {CY}{emulator_data['tag_type_name']}{C0}")
+            else:
+                print(f"  Tag Type: {CY}{emulator_data['tag_type_name']}{C0} (0x{tag_type:02X})")
             
             # For MIFARE Classic types, parse block 0 info
-            if emulator_data['tag_type'] in [0x11, 0x12, 0x13, 0x14]:
+            if tag_type in [0x11, 0x12, 0x13, 0x14] or is_mfc_mode:
                 print(f"\n{CG}MIFARE Classic Block 0 Details:{C0}")
                 block0_bytes = emulator_data['block0']
+                if not isinstance(block0_bytes, (bytes, bytearray)) or len(block0_bytes) < 8:
+                    print(f"  {CR}Insufficient block 0 data (len={len(block0_bytes) if isinstance(block0_bytes, (bytes, bytearray)) else 0}){C0}")
+                    print(f"  {CY}Tip: run 'hf mf eRead -s {slot}' to verify slot dump and retry hw mode e.{C0}")
+                    return
                 uid = block0_bytes[:4].hex().upper()
                 bcc = block0_bytes[4]
                 sak = block0_bytes[5]
@@ -946,6 +971,29 @@ class HWModeEmulator(DeviceRequiredUnit):
                 print(f"  BCC:      {bcc:02X}")
                 print(f"  SAK:      {sak:02X}")
                 print(f"  ATQA:     {atqa}")
+            elif is_iso15693_mode or tag_type == 0x81:
+                system_pages = emulator_data.get('system_pages', {})
+                if system_pages:
+                    uid_raw = system_pages.get("FE", b"")
+                    if isinstance(uid_raw, (bytes, bytearray)) and len(uid_raw) >= 8:
+                        print(f"\n  UID: {CY}{uid_raw[::-1].hex().upper()}{C0}")
+            elif is_mfu_mode:
+                uid_pages = emulator_data.get('uid_pages', {})
+                p0 = uid_pages.get(0, b"\x00\x00\x00\x00")
+                p1 = uid_pages.get(1, b"\x00\x00\x00\x00")
+                p2 = uid_pages.get(2, b"\x00\x00\x00\x00")
+                print(f"\n{CG}MIFARE Ultralight UID Details:{C0}")
+
+                uid7 = bytes(p0[:3] + p1[:4])
+                bcc0 = p0[3]
+                bcc1 = p2[0]
+                calc_bcc0 = uid7[0] ^ uid7[1] ^ uid7[2] ^ 0x88
+                calc_bcc1 = uid7[3] ^ uid7[4] ^ uid7[5] ^ uid7[6]
+                bcc0_status = f"{CG}OK{C0}" if bcc0 == calc_bcc0 else f"{CR}BAD{C0}"
+                bcc1_status = f"{CG}OK{C0}" if bcc1 == calc_bcc1 else f"{CR}BAD{C0}"
+                print(f"  UID:    {CY}{uid7.hex().upper()}{C0}")
+                print(f"  BCC0:   {bcc0:02X} (calc {calc_bcc0:02X}) {bcc0_status}")
+                print(f"  BCC1:   {bcc1:02X} (calc {calc_bcc1:02X}) {bcc1_status}")
         else:
             print(f"{CR}Failed to read emulator data{C0}")
 
@@ -1546,6 +1594,67 @@ class HF15Gen2Config(DeviceRequiredUnit):
 
         resp = self.cmd.hf_15_set_gen2_config(args.size, args.afi, args.dsfid, args.ic)
         print(f"Config Gen2 Magic ISO15693 tag {CY}{'Success' if resp else 'Fail'}{C0}")
+
+
+@hf_15.command("eread")
+class HF15Eread(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Read ISO15693 emulator dump"
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        parser.add_argument(
+            "-c", "--count", default=256, type=int, help="Block count to read (default 256)"
+        )
+        parser.add_argument(
+            "--json", action="store_true", help="Save to json file"
+        )
+        parser.add_argument(
+            "--bin", action="store_true", help="Save to bin file"
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if args.count <= 0:
+            print("Block count must be greater than 0")
+            return
+
+        self.device_com.set_work_mode(PN532KillerMode.EMULATOR, PN532KillerTagType.ISO15693, args.slot - 1)
+
+        print(f"Reading ISO15693 emulator from slot {args.slot}...")
+        dump_map = self.cmd.hf_15_eread(args.slot, args.count)
+        system_pages = self.cmd.hf_15_read_system_pages(args.slot)
+        if dump_map is None or len(dump_map) == 0:
+            print(f"{CR}Failed to read emulator data{C0}")
+            return
+
+        uid_raw = system_pages.get("FE", b"")
+        if isinstance(uid_raw, (bytes, bytearray)) and len(uid_raw) >= 8:
+            print(f"  UID: {CY}{uid_raw[::-1].hex().upper()}{C0}")
+
+        filename_base = f"hf15_eread_slot{args.slot}"
+
+        if args.json:
+            json_file = f"{filename_base}.json"
+            json_data = {
+                "slot": args.slot,
+                "type": "ISO15693",
+                "system_pages": {k: v.hex().upper() for k, v in system_pages.items()},
+                "uid": uid_raw[::-1].hex().upper() if isinstance(uid_raw, (bytes, bytearray)) and len(uid_raw) >= 8 else "",
+                "blocks": {index: block.hex().upper() for index, block in dump_map.items()},
+            }
+            with open(json_file, "w") as f:
+                json.dump(json_data, f, indent=2)
+            print(f"{CG}Saved to {json_file}{C0}")
+
+        if args.bin:
+            bin_file = f"{filename_base}.bin"
+            _save_emulator_dump_bin(bin_file, dump_map, item_count=args.count, item_size=4)
+            print(f"{CG}Saved to {bin_file}{C0}")
+
+        if not args.json and not args.bin:
+            print(f"{CG}Read {len(dump_map)} blocks from slot {args.slot}{C0}")
 
 
 @hf_15.command("eSetUid")
@@ -2637,59 +2746,72 @@ class HfMfEread(DeviceRequiredUnit):
 
     def on_exec(self, args: argparse.Namespace):
         slot = args.slot
-        
-        # Switch to the target slot in emulator mode first
-        # Type 1 = MIFARE Classic
+
         self.device_com.set_work_mode(PN532KillerMode.EMULATOR, 1, slot - 1)
-        
+
         print(f"Reading Mifare Classic 1K emulator from slot {args.slot}...")
         dump_map = self.cmd.hf_mf_eread(slot)
-        
+
         if dump_map is None or len(dump_map) == 0:
             print(f"{CR}Failed to read emulator data{C0}")
             return
-        
-        # Generate filename based on slot
+
         filename_base = f"mf_eread_slot{args.slot}"
-        
-        # Save to JSON if requested
+
         if args.json:
-            json_data = {
-                "slot": args.slot,
-                "type": "MIFARE Classic 1K",
-                "blocks": {}
-            }
-            for block_idx, block_resp in dump_map.items():
-                if hasattr(block_resp, 'parsed'):
-                    json_data["blocks"][block_idx] = block_resp.parsed.hex().upper()
-                else:
-                    json_data["blocks"][block_idx] = block_resp.hex().upper() if isinstance(block_resp, bytes) else str(block_resp)
-            
             json_file = f"{filename_base}.json"
-            with open(json_file, "w") as f:
-                json.dump(json_data, f, indent=2)
+            _save_emulator_dump_json(json_file, args.slot, "MIFARE Classic 1K", "blocks", dump_map)
             print(f"{CG}Saved to {json_file}{C0}")
-        
-        # Save to BIN if requested
+
         if args.bin:
             bin_file = f"{filename_base}.bin"
-            with open(bin_file, "wb") as f:
-                for block_idx in range(64):
-                    if block_idx in dump_map:
-                        block_resp = dump_map[block_idx]
-                        if hasattr(block_resp, 'parsed'):
-                            f.write(block_resp.parsed)
-                        elif isinstance(block_resp, bytes):
-                            f.write(block_resp)
-                        else:
-                            f.write(bytes.fromhex(str(block_resp)))
-                    else:
-                        f.write(b'\x00' * 16)
+            _save_emulator_dump_bin(bin_file, dump_map, item_count=64, item_size=16)
             print(f"{CG}Saved to {bin_file}{C0}")
-        
-        # Print summary
+
         if not args.json and not args.bin:
             print(f"{CG}Read {len(dump_map)} blocks from slot {args.slot}{C0}")
+
+
+@hf_mfu.command("eRead")
+class HfMfuEread(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Read Mifare Ultralight emulator dump"
+        parser.add_argument(
+            "-s", "--slot", default=1, type=int, help="Emulator slot(1-8)"
+        )
+        parser.add_argument(
+            "--json", action="store_true", help="Save to json file"
+        )
+        parser.add_argument(
+            "--bin", action="store_true", help="Save to bin file"
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        self.device_com.set_work_mode(PN532KillerMode.EMULATOR, PN532KillerTagType.MFU, args.slot - 1)
+
+        print(f"Reading Mifare Ultralight emulator from slot {args.slot}...")
+        dump_map = self.cmd.hf_mfu_eread(args.slot)
+        if dump_map is None or len(dump_map) == 0:
+            print(f"{CR}Failed to read emulator data{C0}")
+            return
+
+        filename_base = f"mfu_eread_slot{args.slot}"
+        item_count = max(dump_map.keys()) + 1
+
+        if args.json:
+            json_file = f"{filename_base}.json"
+            _save_emulator_dump_json(json_file, args.slot, "MIFARE Ultralight", "pages", dump_map)
+            print(f"{CG}Saved to {json_file}{C0}")
+
+        if args.bin:
+            bin_file = f"{filename_base}.bin"
+            _save_emulator_dump_bin(bin_file, dump_map, item_count=item_count, item_size=4)
+            print(f"{CG}Saved to {bin_file}{C0}")
+
+        if not args.json and not args.bin:
+            print(f"{CG}Read {len(dump_map)} pages from slot {args.slot}{C0}")
 
 @hf_mf.command("staticnested")
 class HfMfStaticnested(DeviceRequiredUnit):
