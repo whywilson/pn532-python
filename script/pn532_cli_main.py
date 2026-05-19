@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import argparse
 import sys
+import shlex
 import traceback
 import colorama
 import pathlib
@@ -65,7 +66,7 @@ class Pn532CLI:
             cmd_str = 'exit'
 
         # parse cmd
-        argv = cmd_str.split()
+        argv = shlex.split(cmd_str)
 
         tree_node, arg_list = self.get_cmd_node(pn532_cli_unit.root, argv)
         if not tree_node.cls:

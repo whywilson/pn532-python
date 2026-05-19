@@ -20,6 +20,7 @@ from typing import Union
 from pathlib import Path
 from platform import uname
 from datetime import datetime
+from ntag_ndef import encode_url, encode_text, encode_vcard, encode_wifi, encode_raw, tlv_wrap, pad_pages, parse_ndef_dump
 from pn532_enum import MfcKeyType, MifareCommand, PN532KillerMode, PN532KillerTagType
 
 from pn532_utils import CLITree
@@ -2238,10 +2239,11 @@ class HfMfuWrbl(DeviceRequiredUnit):
             print("No tag found")
             return resp
         resp = self.cmd.mf0_write_one_block(block, bytes.fromhex(data))
-        if resp:
+        if resp.data and resp.data[0] == 0x00:
             print(f"Write block {block} with data {data}: {CG}Success{C0}")
         else:
-            print(f"Write block {block} with data {data}: {CR}Failed{C0}")
+            err = resp.data.hex().upper() if resp.data else "no response"
+            print(f"Write block {block} with data {data}: {CR}Failed{C0} ({err})")
 
 @hf_mfu.command("dump")
 class HfMfuDump(DeviceRequiredUnit):
@@ -2419,3 +2421,194 @@ examples:
                 print(f"Updated  UID: {CG}{uid.hex().upper()}{C0}")
             else:
                 print("Failed to read original Block0")
+
+@ntag.command("write")
+class NtagWrite(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = (
+            "Write NDEF data to an NTAG21x tag. "
+            "Provide exactly one of: --uri, --text, --name, --ssid, --hex"
+        )
+        # url
+        parser.add_argument("--uri",  metavar="<str>", default=None,
+                            help="Write URI record  (e.g. https://sec1.dk)")
+        # text
+        parser.add_argument("--text", metavar="<str>", default=None,
+                            help="Write plain-text record")
+        parser.add_argument("--lang", metavar="<xx>",  default="en",
+                            help="Language code for --text (default: en)")
+        # vcard  (triggered by --name)
+        parser.add_argument("--name",  metavar="<str>", default=None,
+                            help="Write vCard record — full name (required for vcard)")
+        parser.add_argument("--tel",   metavar="<str>", default="",
+                            help="Phone number  (vcard)")
+        parser.add_argument("--email", metavar="<str>", default="",
+                            help="Email address  (vcard)")
+        parser.add_argument("--org",   metavar="<str>", default="",
+                            help="Organisation  (vcard)")
+        parser.add_argument("--url",   metavar="<str>", default="",
+                            help="Website URL  (vcard)")
+        # wifi  (triggered by --ssid)
+        parser.add_argument("--ssid", metavar="<str>", default=None,
+                            help="Write Wi-Fi record — network SSID")
+        parser.add_argument("--pass", dest="password", metavar="<str>", default=None,
+                            help="Wi-Fi password  (required with --ssid)")
+        parser.add_argument("--auth", metavar="<str>", default="WPA2",
+                            help="Auth: OPEN/WPA/WPA2/WPAWPA2  (default: WPA2)")
+        parser.add_argument("--enc",  metavar="<str>", default="AES",
+                            help="Enc: NONE/WEP/TKIP/AES/AESTKIP  (default: AES)")
+        # raw
+        parser.add_argument("--hex", metavar="<hex>", default=None,
+                            help="Write raw NDEF message as hex bytes")
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        try:
+            if args.uri is not None:
+                ndef_msg = encode_url(args.uri)
+                label = f"URI: {args.uri}"
+
+            elif args.text is not None:
+                ndef_msg = encode_text(args.text, lang=args.lang)
+                label = f"Text: {args.text!r}"
+
+            elif args.name is not None:
+                ndef_msg = encode_vcard(name=args.name, tel=args.tel,
+                                        email=args.email, org=args.org,
+                                        url=args.url)
+                label = f"vCard: {args.name}"
+
+            elif args.ssid is not None:
+                if not args.password:
+                    print(f"{CR}--pass required with --ssid{C0}")
+                    return
+                ndef_msg = encode_wifi(ssid=args.ssid, password=args.password,
+                                       auth=args.auth, enc=args.enc)
+                label = f"Wi-Fi: {args.ssid}"
+
+            elif args.hex is not None:
+                ndef_msg = encode_raw(args.hex)
+                label = "Raw NDEF"
+
+            else:
+                print("Provide one of: --uri, --text, --name, --ssid, --hex")
+                return
+
+        except ValueError as e:
+            print(f"{CR}Encoding error: {e}{C0}")
+            return
+
+        tlv_data = pad_pages(tlv_wrap(ndef_msg))
+        total_bytes = len(tlv_data)
+        num_pages   = total_bytes // 4
+
+        if total_bytes > 888:
+            print(f"{CR}Payload too large even for NTAG216 ({total_bytes} B, max 888 B){C0}")
+            return
+        if total_bytes > 504:
+            print(f"{CY}Warning: {total_bytes} B — requires NTAG216 (888 B){C0}")
+        elif total_bytes > 144:
+            print(f"{CY}Warning: {total_bytes} B — requires NTAG215 (504 B) or NTAG216{C0}")
+
+        print(f"Type         : {label}")
+        print(f"NDEF message : {ndef_msg.hex().upper()}")
+        print(f"TLV-wrapped  : {tlv_data.hex().upper()}")
+        print(f"Writing {total_bytes} bytes ({num_pages} pages) starting at page 4 ...")
+
+        resp = self.cmd.hf_14a_scan()
+        if resp is None:
+            print(f"{CR}No tag found{C0}")
+            return
+
+        pages = [tlv_data[i:i+4] for i in range(0, total_bytes, 4)]
+        for i, page_data in enumerate(pages):
+            page_num = 4 + i
+            resp = self.cmd.mf0_write_one_block(page_num, page_data)
+            if resp.data and resp.data[0] == 0x00:
+                print(f"  Page {page_num:3d}: {page_data.hex().upper()} {CG}OK{C0}")
+            else:
+                err = resp.data.hex().upper() if resp.data else "no response"
+                print(f"  Page {page_num:3d}: {page_data.hex().upper()} {CR}FAILED{C0} ({err})")
+                return
+
+        print(f"{CG}Write complete.{C0}")
+
+
+@ntag.command("read")
+class NtagRead(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Read and decode NDEF data from an NTAG21x tag"
+        parser.add_argument("--dump", action="store_true",
+                            help="Also print raw page dump")
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        resp = self.cmd.hf_14a_scan()
+        if resp is None:
+            print(f"{CR}No tag found{C0}")
+            return
+
+        uid = resp[0]['uid'].hex().upper()
+        print(f"UID   : {CG}{uid}{C0}")
+
+        # Read all pages.  Start at block 0; CC bytes at page 3 give tag size.
+        dump = bytearray()
+        max_block = 4
+        block = 0
+        while block < max_block:
+            r = self.cmd.mf0_read_one_block(block)
+            if r and r.parsed and len(r.parsed) == 16:
+                if block == 0:
+                    # CC at page 3, byte 2: size in 8-byte units
+                    cc_size = r.parsed[14]
+                    max_block = cc_size * 2 + 9
+                dump.extend(r.parsed)
+            else:
+                print(f"{CY}Read stopped at block {block}{C0}")
+                print(f"  status : {r.status!r}")
+                print(f"  data   : {r.data.hex().upper() if r.data else 'empty'}")
+                print(f"  parsed : {r.parsed!r}")
+                break
+            block += 4
+
+        print(f"Pages : {len(dump) // 4}  ({len(dump)} bytes)")
+
+        if args.dump:
+            print(f"\n{CG}--- Raw page dump ---{C0}")
+            for p in range(0, len(dump) // 4):
+                offset = p * 4
+                row = dump[offset:offset + 4]
+                ascii_repr = ''.join(chr(b) if 32 <= b <= 126 else '.' for b in row)
+                print(f"  Page {p:3d}: {row.hex().upper()}  {ascii_repr}")
+
+        records = parse_ndef_dump(bytes(dump))
+        if not records:
+            print(f"{CY}No NDEF records found{C0}")
+            return
+
+        print(f"\n{CG}--- NDEF records ({len(records)}) ---{C0}")
+        for i, rec in enumerate(records, 1):
+            rtype = rec.get('type', '?')
+            value = rec.get('value', '')
+            print(f"\n  [{i}] {CG}{rtype}{C0}")
+
+            if rtype == 'Text':
+                lang = rec.get('lang', '')
+                print(f"      Lang  : {lang}")
+                print(f"      Value : {value}")
+
+            elif rtype == 'URI':
+                print(f"      URI   : {CG}{value}{C0}")
+
+            elif rtype == 'vCard':
+                for line in value.strip().splitlines():
+                    print(f"      {line}")
+
+            elif rtype == 'WiFi':
+                for k, v in value.items():
+                    print(f"      {k:10s}: {v}")
+
+            else:
+                print(f"      {value}")
