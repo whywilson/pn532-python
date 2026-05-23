@@ -43,6 +43,25 @@ class Pn532CMD:
         # Flip this after the first failure to avoid repeating long timeouts in dumps.
         self._mf0_prefer_raw = False
 
+    @staticmethod
+    def _format_debug_payload(data: bytes, checksum_len: int = 0) -> str:
+        payload = bytes(data)
+        if checksum_len > 0 and len(payload) >= checksum_len:
+            head = payload[:-checksum_len].hex().upper()
+            tail = payload[-checksum_len:].hex().upper()
+            if head:
+                return f"{head} [{tail}]"
+            return f"[{tail}]"
+        return payload.hex().upper()
+
+    @staticmethod
+    def _debug_crc_spec(algorithm: str, body_prefix_len: int) -> dict:
+        return {
+            "length": 2,
+            "algorithm": algorithm,
+            "body_prefix_len": body_prefix_len,
+        }
+
     @expect_response(Status.SUCCESS)
     def hf_14a_scan(self):
         self.device.set_normal_mode()
@@ -255,7 +274,17 @@ class Pn532CMD:
         if cs.append_crc:
             data = bytes(data) + crc16A(bytes(data))
         timeout_s = max(0.05, float(resp_timeout_ms) / 1000.0)
-        resp = self.device.send_cmd_sync(Command.InCommunicateThru, data, timeout=timeout_s)
+        resp = self.device.send_cmd_sync(
+            Command.InCommunicateThru,
+            data,
+            timeout=timeout_s,
+            debug_send_payload_crc=(
+                self._debug_crc_spec("crc16a", 1) if cs.append_crc else None
+            ),
+            debug_receive_payload_crc=(
+                self._debug_crc_spec("crc16a", 2) if cs.append_crc else None
+            ),
+        )
         resp.parsed = resp.data
         if cs.keep_rf_field == 0:
             self.device.halt()
@@ -265,8 +294,9 @@ class Pn532CMD:
             sleep(0.1)
 
         if DEBUG:
+            send_data = self._format_debug_payload(data, 2 if cs.append_crc else 0)
             print(
-                f"Send: {bytes(data).hex().upper()} Status: {hex(resp.status)[2:].upper()}, Data: {resp.parsed.hex().upper()}"
+                f"Send: {send_data} Status: {hex(resp.status)[2:].upper()}, Data: {resp.parsed.hex().upper()}"
             )
         return resp
 
@@ -878,12 +908,23 @@ class Pn532CMD:
         if cs.no_check_response:
             req_ack = 0x00
         data = bytes([req_ack, 0x00]) + data  # Insert Tag Num
-        resp = self.device.send_cmd_sync(Command.InCommunicateThru, data, timeout=1)
+        resp = self.device.send_cmd_sync(
+            Command.InCommunicateThru,
+            data,
+            timeout=1,
+            debug_send_payload_crc=(
+                self._debug_crc_spec("crc16ccitt", 3) if cs.append_crc else None
+            ),
+            debug_receive_payload_crc=(
+                self._debug_crc_spec("crc16ccitt", 2) if cs.append_crc else None
+            ),
+        )
         resp.parsed = resp.data
 
         if DEBUG:
+            send_data = self._format_debug_payload(data, 2 if cs.append_crc else 0)
             print(
-                f"Send: {bytes(data).hex().upper()} Status: {hex(resp.status)}, Data: {resp.parsed.hex().upper()}"
+                f"Send: {send_data} Status: {hex(resp.status)}, Data: {resp.parsed.hex().upper()}"
             )
         return resp
 

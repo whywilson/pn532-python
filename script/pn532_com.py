@@ -9,6 +9,7 @@ from pn532_enum import Command, Pn532KillerCommand, Status, PN532KillerMode, PN5
 from pn532_enum import BasicCapabilities, PN532Capabilities, PN532KillerCapabilities
 from pn532_utils import CC, CB, CG, C0, CY, CR
 from pn532_communication import CommunicationInterface, CommunicationFactory
+from unit.calc import crc16A as calc_crc16a, crc16Ccitt as calc_crc16ccitt
 
 DEBUG = False 
 THREAD_BLOCKING_TIMEOUT = 0.1
@@ -46,6 +47,7 @@ class Pn532Com:
         self.event_closing = threading.Event()
         self.port_string = None  # store original open string
         self.ignore_late_cmd_until = {}  # 记录某命令在这个时间点前的迟到帧直接丢弃
+        self._debug_table_header_printed = False
 
     device_name = "Unknown"
     data_max_length = 0xFF
@@ -86,6 +88,7 @@ class Pn532Com:
             # clear variable
             self.send_data_queue.queue.clear()
             self.wait_response_map.clear()
+            self._debug_table_header_printed = False
             # Start a sub thread to process data
             self.event_closing.clear()
             threading.Thread(target=self.thread_data_receive, daemon=True).start()
@@ -119,6 +122,7 @@ class Pn532Com:
             self.communication = None
         self.wait_response_map.clear()
         self.send_data_queue.queue.clear()
+        self._debug_table_header_printed = False
 
     def set_normal_mode(self) -> response:
         self.communication.write(bytes.fromhex("5500000000000000000000000000"))
@@ -147,6 +151,92 @@ class Pn532Com:
         b = self._normalize_payload(data)
         return b.hex().upper() if b else ""
 
+    def _format_debug_frame(
+        self,
+        data: Union[bytes, bytearray, list, tuple, int, None],
+        payload_crc=None,
+    ) -> str:
+        frame = self._normalize_payload(data)
+        if not frame:
+            return ""
+        if not frame.startswith(b"\x00\x00\xFF") or len(frame) < 6:
+            return frame.hex().upper()
+
+        has_postamble = frame[-1] == 0x00 and len(frame) >= 7
+        dcs_index = len(frame) - 2 if has_postamble else len(frame) - 1
+        if dcs_index < 5:
+            return frame.hex().upper()
+
+        tfi_index = 5
+        if dcs_index <= tfi_index:
+            return frame.hex().upper()
+
+        header = frame[:tfi_index + 1]
+        body = frame[tfi_index + 1:dcs_index]
+        dcs = frame[dcs_index:dcs_index + 1]
+        postamble = frame[dcs_index + 1:] if has_postamble else b""
+
+        payload, matched_payload_crc = self._split_debug_payload_crc(body, payload_crc)
+
+        preamble = header[:1].hex().upper()
+        start_code = header[1:3].hex().upper()
+        length = header[3:4].hex().upper()
+        lcs = header[4:5].hex().upper()
+        tfi = header[5:6].hex().upper()
+        payload_hex = payload.hex().upper()
+        crc_hex = f"[{matched_payload_crc.hex().upper()}]" if matched_payload_crc else ""
+        dcs_hex = dcs.hex().upper() if dcs else ""
+        postamble_hex = postamble.hex().upper() if postamble else ""
+
+        return (
+            f"{preamble}\t{start_code}\t{length}\t{lcs}\t{tfi}\t"
+            f"{payload_hex}\t{crc_hex}\t{dcs_hex}\t{postamble_hex}"
+        )
+
+    def _debug_table_header(self) -> str:
+        return "PRE\tSTART\tLEN\tLCS\tTFI\tDATA\tCRC\tDCS\tPOST"
+
+    def _print_debug_frame(self, direction: str, frame: Union[bytes, bytearray, list, tuple, int, None], payload_crc=None):
+        if not self._debug_table_header_printed:
+            print(f"{CY}{self._debug_table_header()}{C0}")
+            self._debug_table_header_printed = True
+        print(f"{direction}   {CY}{self._format_debug_frame(frame, payload_crc)}{C0}")
+
+    def _compute_debug_crc(self, data: bytes, algorithm: str) -> bytes:
+        if algorithm == "crc16a":
+            return calc_crc16a(data)
+        if algorithm == "crc16ccitt":
+            return calc_crc16ccitt(data)
+        return b""
+
+    def _split_debug_payload_crc(self, body: bytes, payload_crc) -> tuple[bytes, bytes]:
+        if not body or not payload_crc:
+            return body, b""
+
+        if isinstance(payload_crc, int):
+            if payload_crc > 0 and len(body) >= payload_crc:
+                return body[:-payload_crc], body[-payload_crc:]
+            return body, b""
+
+        if not isinstance(payload_crc, dict):
+            return body, b""
+
+        crc_len = max(0, int(payload_crc.get("length", 0)))
+        body_prefix_len = max(0, int(payload_crc.get("body_prefix_len", 0)))
+        algorithm = str(payload_crc.get("algorithm", "")).lower()
+        if crc_len <= 0 or len(body) < body_prefix_len + crc_len:
+            return body, b""
+
+        candidate = body[-crc_len:]
+        protected_data = body[body_prefix_len:-crc_len]
+        if not protected_data:
+            return body, b""
+
+        computed = self._compute_debug_crc(protected_data, algorithm)
+        if computed[:crc_len] == candidate:
+            return body[:-crc_len], candidate
+        return body, b""
+
     # PN532Killer
     def set_work_mode(self, mode: PN532KillerMode = PN532KillerMode.READER, type=PN532KillerTagType.MFC, index=0) -> response:
         response = self.send_cmd_sync(
@@ -165,7 +255,7 @@ class Pn532Com:
             raise NotOpenException("Device not open")
         assert self.communication is not None
         if DEBUG:
-            print(f'=>   {CY}{frame.hex().upper()}{C0}')
+            self._print_debug_frame("=>", frame)
         self.communication.write(frame)
         
         if not wait_response:
@@ -320,7 +410,8 @@ class Pn532Com:
                     if cmd_resp in getattr(self, 'ignore_late_cmd_until', {}) and time.time() >= self.ignore_late_cmd_until[cmd_resp]:
                         del self.ignore_late_cmd_until[cmd_resp]
                 if DEBUG:
-                    print(f"<=   {CY}{data_buffer[i:frame_end-1].hex().upper()}{C0}")
+                    debug_payload_crc = self.wait_response_map.get(cmd_resp, {}).get("debug_receive_payload_crc")
+                    self._print_debug_frame("<=", data_buffer[i:frame_end-1], debug_payload_crc)
                 if cmd_resp in self.wait_response_map:
                     payload = data[2:]
                     response = Response(cmd_resp, Status.SUCCESS, payload)
@@ -371,7 +462,7 @@ class Pn532Com:
                     self.close()
                     break
                 if DEBUG:
-                    print(f"=>   {CY}{task['frame'].hex().upper()}{C0}")
+                    self._print_debug_frame("=>", task["frame"], task.get("debug_send_payload_crc"))
                 self.communication.write(task["frame"])
             except Exception as e:
                 print(f"Communication Error {e}, thread for transfer exit.")
@@ -427,6 +518,8 @@ class Pn532Com:
         callback=None,
         timeout: int = 1,
         close: bool = False,
+        debug_send_payload_crc=None,
+        debug_receive_payload_crc=None,
     ):
         """
             Send cmd to device
@@ -454,11 +547,19 @@ class Pn532Com:
             self.wait_response_map[cmd]['callback'] = callback
         if 'response' not in self.wait_response_map[cmd]:
             self.wait_response_map[cmd]['response'] = None
+        self.wait_response_map[cmd]['debug_send_payload_crc'] = debug_send_payload_crc
+        self.wait_response_map[cmd]['debug_receive_payload_crc'] = debug_receive_payload_crc
         self.wait_response_map[cmd]['_pre_registered'] = True
         self.wait_response_map[cmd]['_timeout_value'] = timeout
         # if DEBUG:
         #     print(f"PRE-REG CMD=0x{cmd:02X} TIMEOUT={timeout}s DATA={self._hex_str(data)}")
-        task = {"cmd": cmd, "frame": data_frame, "timeout": timeout, "close": close}
+        task = {
+            "cmd": cmd,
+            "frame": data_frame,
+            "timeout": timeout,
+            "close": close,
+            "debug_send_payload_crc": debug_send_payload_crc,
+        }
         if callable(callback):
             task["callback"] = callback
         # if DEBUG:
@@ -472,6 +573,8 @@ class Pn532Com:
         status: int = 0,
         timeout: int = 2,
         retries: int = 0,  # 保留参数以兼容，已不再自动重发
+        debug_send_payload_crc=None,
+        debug_receive_payload_crc=None,
     ) -> response:
         """
         发送命令并同步等待响应（不再自动重发）。
@@ -494,7 +597,15 @@ class Pn532Com:
             effective_timeout = 3  # 给扫描至少 3s
         # 其它命令给少量额外宽限（等待循环内部使用，不影响 timeout 线程判定）
         wait_margin = 0.5 if not network_mode else 0.7
-        self.send_cmd_auto(cmd, data, status, None, effective_timeout)
+        self.send_cmd_auto(
+            cmd,
+            data,
+            status,
+            None,
+            effective_timeout,
+            debug_send_payload_crc=debug_send_payload_crc,
+            debug_receive_payload_crc=debug_receive_payload_crc,
+        )
         start_wait = time.time()
         # 等待任务注册
         while cmd not in self.wait_response_map:
