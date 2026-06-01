@@ -5,6 +5,19 @@ import os
 import sys
 from platform import uname
 
+
+def _to_hex_upper(value):
+    if isinstance(value, (bytes, bytearray)):
+        return value.hex().upper()
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.upper()
+    try:
+        return bytes(value).hex().upper()
+    except Exception:
+        return str(value).upper()
+
 def test_fn():
     dev = pn532_com.Pn532Com()
     # 1) Allow override via environment variable
@@ -63,7 +76,8 @@ def test_fn():
         if not dev.isOpen():
             print(f"Failed to connect: {port_name}")
             return
-        print(f"Connected: {port_name}")
+        device_name = dev.get_device_name()
+        print(f"Connected: {port_name} ({device_name})")
         cml = Pn532CMD(dev)
     except Exception as e:
         print(f"Connection error: {e}")
@@ -73,6 +87,7 @@ def test_fn():
         print("Getting firmware version...")
         fw_version = cml.get_firmware_version()
         print("FW Version:", fw_version)
+        is_pn532killer = dev.get_device_name() == "PN532Killer"
 
         # After getting firmware, run hf 14a scan (handle only the first tag)
         print("Running hf 14a scan...")
@@ -80,17 +95,13 @@ def test_fn():
         if resp and isinstance(resp, list) and len(resp) > 0:
             t = resp[0]
             uid = t.get("uid", b"")
-            uid_hex = (uid.hex().upper() if isinstance(uid, (bytes, bytearray))
-                       else (bytes(uid).hex().upper() if uid is not None else ""))
+            uid_hex = _to_hex_upper(uid)
             atqa = t.get("atqa", b"")
-            atqa_hex = (atqa.hex().upper() if isinstance(atqa, (bytes, bytearray))
-                        else (bytes(atqa).hex().upper() if atqa is not None else ""))
+            atqa_hex = _to_hex_upper(atqa)
             sak = t.get("sak", b"")
-            sak_hex = (sak.hex().upper() if isinstance(sak, (bytes, bytearray))
-                       else (bytes(sak).hex().upper() if sak is not None else ""))
+            sak_hex = _to_hex_upper(sak)
             ats = t.get("ats", b"")
-            ats_hex = (ats.hex().upper() if isinstance(ats, (bytes, bytearray))
-                       else (bytes(ats).hex().upper() if ats else ""))
+            ats_hex = _to_hex_upper(ats)
             # Print each field on a new line
             print(f"UID:  {uid_hex}")
             print(f"ATQA: {atqa_hex}")
@@ -98,6 +109,19 @@ def test_fn():
             print(f"ATS:  {ats_hex}")
         else:
             print("No 14a tag found")
+
+        # PN532Killer supports both 14A and 15 scans in reader mode.
+        if is_pn532killer:
+            print("Running hf 15 scan (ISO15693, PN532Killer only)...")
+            resp_15 = cml.hf_15_scan()
+            if resp_15 and isinstance(resp_15, list) and len(resp_15) > 0:
+                for index, tag in enumerate(resp_15, 1):
+                    uid_15 = _to_hex_upper(tag.get("uid", ""))
+                    tag_type = tag.get("tagType", "")
+                    tag_num = tag.get("tagNum", "")
+                    print(f"[{index}] UID: {uid_15}  tagType: {tag_type}  tagNum: {tag_num}")
+            else:
+                print("No ISO15693 tag found")
     except Exception as e:
         print("Runtime error:", e)
         import traceback
