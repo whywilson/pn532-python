@@ -43,6 +43,7 @@ class Pn532Com:
         """
         self.communication: Union[CommunicationInterface, None] = None
         self.send_data_queue = queue.Queue()
+        self.uhf_raw_queue = queue.Queue(maxsize=512)
         self.wait_response_map = {}
         self.event_closing = threading.Event()
         self.port_string = None  # store original open string
@@ -87,6 +88,7 @@ class Pn532Com:
             self.communication.set_timeout(0.3 if hasattr(self, 'connection_type') and self.connection_type in ('udp','tcp') else THREAD_BLOCKING_TIMEOUT)
             # clear variable
             self.send_data_queue.queue.clear()
+            self.clear_uhf_raw_frames()
             self.wait_response_map.clear()
             self._debug_table_header_printed = False
             # Start a sub thread to process data
@@ -122,6 +124,7 @@ class Pn532Com:
             self.communication = None
         self.wait_response_map.clear()
         self.send_data_queue.queue.clear()
+        self.clear_uhf_raw_frames()
         self._debug_table_header_printed = False
 
     def set_normal_mode(self) -> response:
@@ -239,8 +242,10 @@ class Pn532Com:
 
     # PN532Killer
     def set_work_mode(self, mode: PN532KillerMode = PN532KillerMode.READER, type=PN532KillerTagType.MFC, index=0) -> response:
+        mode_value = mode.value if hasattr(mode, "value") else int(mode)
+        type_value = type.value if hasattr(type, "value") else int(type)
         response = self.send_cmd_sync(
-            Pn532KillerCommand.SetWorkMode, [mode.value, type, index]
+            Pn532KillerCommand.SetWorkMode, [mode_value & 0xFF, type_value & 0xFF, int(index) & 0xFF]
         )
         return response
 
@@ -274,6 +279,42 @@ class Pn532Com:
             # This is a simple implementation - for debugging mostly
         
         return None
+
+    def clear_uhf_raw_frames(self):
+        while True:
+            try:
+                self.uhf_raw_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def get_uhf_raw_frame(self, timeout: float = 0.2):
+        try:
+            return self.uhf_raw_queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def _offer_uhf_raw_frame(self, frame: bytes):
+        try:
+            self.uhf_raw_queue.put_nowait(frame)
+        except queue.Full:
+            try:
+                self.uhf_raw_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.uhf_raw_queue.put_nowait(frame)
+            except queue.Full:
+                pass
+
+    @staticmethod
+    def _is_valid_uhf_raw_frame(frame: bytes) -> bool:
+        if len(frame) < 5:
+            return False
+        if frame[0] != 0xA0:
+            return False
+        if len(frame) != (frame[1] + 2):
+            return False
+        return (sum(frame) & 0xFF) == 0
 
     def reset_register(self) -> response:
         response = self.send_cmd_sync(
@@ -349,91 +390,133 @@ class Pn532Com:
             # if DEBUG:
             #     print(f"READ {chunk.hex().upper()}")
             data_buffer.extend(chunk)
+
             # 过滤所有 ACK
             changed = True
             while changed:
                 changed = False
                 pos = data_buffer.find(ACK)
                 if pos != -1:
-                    del data_buffer[pos:pos+len(ACK)]
+                    del data_buffer[pos : pos + len(ACK)]
                     changed = True
-            # 尝试解析帧
-            i = 0
-            while i <= len(data_buffer) - 7:  # 最小帧长度
-                # 寻找前导 00 00 FF
-                if not (data_buffer[i] == 0x00 and data_buffer[i+1] == 0x00 and data_buffer[i+2] == 0xFF):
-                    i += 1
-                    continue
-                if i + 5 > len(data_buffer):
-                    break  # 不足以读取 LEN/LCS
-                length = data_buffer[i+3]
-                lcs = data_buffer[i+4]
-                if ((length + lcs) & 0xFF) != 0:
-                    if DEBUG:
-                        print(f"LEN/LCS mismatch at {i}: LEN={length:02X} LCS={lcs:02X}")
-                    i += 1
-                    continue
-                frame_end = i + 5 + length + 2  # +DCS +POSTAMBLE
-                if frame_end > len(data_buffer):
-                    break  # 等待更多数据
-                if data_buffer[frame_end-1] != 0x00:
-                    if DEBUG:
-                        print(f"POSTAMBLE error at {i}")
-                    i += 1
-                    continue
-                data = bytes(data_buffer[i+5:i+5+length])
-                dcs = data_buffer[i+5+length]
-                if self.dcs(bytearray(data)) != dcs:
-                    if DEBUG:
-                        print(f"DCS error at {i}: expect {self.dcs(bytearray(data)):02X} got {dcs:02X}")
-                    i += 1
-                    continue
-                if not data:
-                    i = frame_end
-                    continue
-                tfi = data[0]
-                if tfi != self.data_tfi_receive:
-                    # if DEBUG:
-                    #     print(f"Unexpected TFI {tfi:02X} (expect {self.data_tfi_receive:02X}), resync")
-                    i += 1
-                    continue
-                if len(data) < 2:
-                    i = frame_end
-                    continue
-                cmd_resp = data[1] - 1  # 原始命令
-                if cmd_resp in getattr(self, 'ignore_late_cmd_until', {}) and time.time() < self.ignore_late_cmd_until[cmd_resp]:
-                    if DEBUG:
-                        print(f"Discard late frame for CMD=0x{cmd_resp:02X}")
-                    i = frame_end
-                    continue
-                else:
-                    if cmd_resp in getattr(self, 'ignore_late_cmd_until', {}) and time.time() >= self.ignore_late_cmd_until[cmd_resp]:
+
+            # 解析 PN532 帧与 UHF 原始帧（A0 ...）
+            while data_buffer:
+                pn_idx = data_buffer.find(b"\x00\x00\xFF")
+                uhf_idx = data_buffer.find(b"\xA0")
+                candidates = [idx for idx in (pn_idx, uhf_idx) if idx != -1]
+                if not candidates:
+                    # 保留少量尾部，避免截断跨包起始符
+                    if len(data_buffer) > 3:
+                        del data_buffer[:-3]
+                    break
+
+                frame_idx = min(candidates)
+                if frame_idx > 0:
+                    del data_buffer[:frame_idx]
+
+                if data_buffer.startswith(b"\x00\x00\xFF"):
+                    if len(data_buffer) < 5:
+                        break
+
+                    length = data_buffer[3]
+                    lcs = data_buffer[4]
+                    if ((length + lcs) & 0xFF) != 0:
+                        if DEBUG:
+                            print(f"LEN/LCS mismatch: LEN={length:02X} LCS={lcs:02X}")
+                        del data_buffer[0]
+                        continue
+
+                    frame_end = 5 + length + 2  # +DCS +POSTAMBLE
+                    if len(data_buffer) < frame_end:
+                        break
+
+                    if data_buffer[frame_end - 1] != 0x00:
+                        if DEBUG:
+                            print("POSTAMBLE error")
+                        del data_buffer[0]
+                        continue
+
+                    data = bytes(data_buffer[5 : 5 + length])
+                    dcs = data_buffer[5 + length]
+                    if self.dcs(bytearray(data)) != dcs:
+                        if DEBUG:
+                            print(f"DCS error: expect {self.dcs(bytearray(data)):02X} got {dcs:02X}")
+                        del data_buffer[0]
+                        continue
+
+                    frame = bytes(data_buffer[: frame_end - 1])
+                    del data_buffer[:frame_end]
+
+                    if not data:
+                        continue
+                    tfi = data[0]
+                    if tfi != self.data_tfi_receive:
+                        continue
+                    if len(data) < 2:
+                        continue
+
+                    cmd_resp = data[1] - 1
+                    if cmd_resp in getattr(self, "ignore_late_cmd_until", {}) and time.time() < self.ignore_late_cmd_until[cmd_resp]:
+                        if DEBUG:
+                            print(f"Discard late frame for CMD=0x{cmd_resp:02X}")
+                        continue
+                    if cmd_resp in getattr(self, "ignore_late_cmd_until", {}) and time.time() >= self.ignore_late_cmd_until[cmd_resp]:
                         del self.ignore_late_cmd_until[cmd_resp]
-                if DEBUG:
-                    debug_payload_crc = self.wait_response_map.get(cmd_resp, {}).get("debug_receive_payload_crc")
-                    self._print_debug_frame("<=", data_buffer[i:frame_end-1], debug_payload_crc)
-                if cmd_resp in self.wait_response_map:
-                    payload = data[2:]
-                    response = Response(cmd_resp, Status.SUCCESS, payload)
-                    if (cmd_resp == Command.InCommunicateThru or cmd_resp == Command.InDataExchange) and len(data) > 2:
-                        status_byte = data[2]
-                        response = Response(cmd_resp, status_byte, data[2:])
-                        if status_byte == 0 and len(data) > 3:
-                            response = Response(cmd_resp, status_byte, data[3:])
-                    self.wait_response_map[cmd_resp]["response"] = response
-                    fn_call = self.wait_response_map[cmd_resp].get("callback")
-                    if callable(fn_call):
-                        del self.wait_response_map[cmd_resp]
-                        try:
-                            fn_call(cmd_resp, 0, data)
-                        except Exception as e:
-                            print(f"Callback error: {e}")
-                else:
+
                     if DEBUG:
-                        print(f"No waiter for CMD=0x{cmd_resp:02X}, pending keys={[hex(k) for k in self.wait_response_map.keys()]}")
-                i = frame_end
-            if i > 0:
-                del data_buffer[:i]
+                        debug_payload_crc = self.wait_response_map.get(cmd_resp, {}).get("debug_receive_payload_crc")
+                        self._print_debug_frame("<=", frame, debug_payload_crc)
+
+                    if cmd_resp in self.wait_response_map:
+                        payload = data[2:]
+                        response = Response(cmd_resp, Status.SUCCESS, payload)
+                        if (cmd_resp == Command.InCommunicateThru or cmd_resp == Command.InDataExchange) and len(data) > 2:
+                            status_byte = data[2]
+                            response = Response(cmd_resp, status_byte, data[2:])
+                            if status_byte == 0 and len(data) > 3:
+                                response = Response(cmd_resp, status_byte, data[3:])
+                        self.wait_response_map[cmd_resp]["response"] = response
+                        fn_call = self.wait_response_map[cmd_resp].get("callback")
+                        if callable(fn_call):
+                            del self.wait_response_map[cmd_resp]
+                            try:
+                                fn_call(cmd_resp, 0, data)
+                            except Exception as e:
+                                print(f"Callback error: {e}")
+                    else:
+                        if DEBUG:
+                            print(f"No waiter for CMD=0x{cmd_resp:02X}, pending keys={[hex(k) for k in self.wait_response_map.keys()]}")
+                    continue
+
+                # Raw UHF frame starts with A0 and checksum(sum(frame)&0xFF)==0
+                if data_buffer[0] == 0xA0:
+                    if len(data_buffer) < 2:
+                        break
+
+                    raw_len = data_buffer[1] + 2
+                    if raw_len < 5:
+                        del data_buffer[0]
+                        continue
+                    if len(data_buffer) < raw_len:
+                        break
+
+                    raw_frame = bytes(data_buffer[:raw_len])
+                    del data_buffer[:raw_len]
+
+                    if not self._is_valid_uhf_raw_frame(raw_frame):
+                        if DEBUG:
+                            print(f"Discard invalid UHF frame: {raw_frame.hex().upper()}")
+                        continue
+
+                    if DEBUG:
+                        print(f"<=   UHF\t{raw_frame.hex().upper()}")
+                    self._offer_uhf_raw_frame(raw_frame)
+                    continue
+
+                # Unknown prefix, drop one byte for resync
+                del data_buffer[0]
+
     def thread_data_transfer(self):
         while self.isOpen():
             try:

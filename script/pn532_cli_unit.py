@@ -138,6 +138,22 @@ def _fmt32(value: int) -> str:
     return f"{value:08X}"
 
 
+def _print_uhf_inventory_table(epc_counts: dict[str, int]):
+    rows = list(epc_counts.items())
+    if len(rows) == 0:
+        print("No UHF tags found")
+        return
+
+    epc_width = max(3, *(len(epc) for epc, _ in rows))
+    cnt_width = max(3, *(len(str(cnt)) for _, cnt in rows))
+    idx_width = max(1, len(str(len(rows))))
+    header = f"{'#':>{idx_width}}  {'EPC':<{epc_width}}  {'CNT':>{cnt_width}}"
+    print(header)
+    print("-" * len(header))
+    for idx, (epc, cnt) in enumerate(rows, start=1):
+        print(f"{idx:>{idx_width}}  {epc:<{epc_width}}  {cnt:>{cnt_width}}")
+
+
 DEFAULT_MF_KEYS = [
     bytes.fromhex("FFFFFFFFFFFF"),
     bytes.fromhex("000000000000"),
@@ -638,6 +654,7 @@ root = CLITree(root=True)
 hw = root.subgroup("hw", "Hardware-related commands")
 hw_led = hw.subgroup("led", "LED control commands")
 hw_mode = hw.subgroup("mode", "Mode-related commands")
+uhf = root.subgroup("uhf", "UHF commands")
 hf = root.subgroup("hf", "High-frequency commands")
 hf_14a = hf.subgroup("14a", "ISO 14443-A commands")
 hf_mf = hf.subgroup("mf", "MIFARE Classic commands")
@@ -1987,6 +2004,115 @@ class HWVersion(DeviceRequiredUnit):
             print(f"Version: {version}")
         else:
             print("Failed to get firmware version")
+
+
+@uhf.command("version")
+class HWUhfVersion(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Get UHF reader firmware version"
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if self.device_com.get_device_name() != "PN532Killer":
+            print("UHF is only supported on PN532Killer.")
+            return
+        version_info = self.cmd.uhf_get_version()
+        if version_info is None:
+            print(f"{CR}Failed to get UHF version{C0}")
+            return
+        print(f"UHF Version: {version_info['version']}")
+
+
+@uhf.command("reset")
+class HWUhfReset(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Reset UHF reader"
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if self.device_com.get_device_name() != "PN532Killer":
+            print("UHF is only supported on PN532Killer.")
+            return
+        reset_info = self.cmd.uhf_reset_reader()
+        if reset_info is None:
+            print(f"{CR}UHF reset timeout{C0}")
+            return
+        ok = bool(reset_info.get("ok"))
+        print(f"UHF reset: {CG}Success{C0}" if ok else f"UHF reset: {CR}Fail{C0}")
+
+
+@uhf.command("stop")
+class HWUhfStop(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Stop UHF inventory"
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if self.device_com.get_device_name() != "PN532Killer":
+            print("UHF is only supported on PN532Killer.")
+            return
+        self.cmd.uhf_stop_inventory()
+        self.cmd.stop_flag = True
+        print("UHF inventory stop command sent")
+
+
+@uhf.command("inventory")
+class HWUhfInventory(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Start UHF inventory and press OK(Enter) to stop"
+        parser.add_argument(
+            "--time",
+            type=float,
+            default=0,
+            help="Auto-stop after N seconds (0 means manual stop by OK/Enter)",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if self.device_com.get_device_name() != "PN532Killer":
+            print("UHF is only supported on PN532Killer.")
+            return
+
+        started = self.cmd.uhf_inventory_start()
+        if not started:
+            print(f"{CR}Failed to start UHF inventory{C0}")
+            return
+
+        print(f"{CY}UHF inventory started. Press OK(Enter) to stop...{C0}")
+        epc_counts: dict[str, int] = {}
+        self.cmd.stop_flag = False
+        input_thread = threading.Thread(target=self.cmd.wait_for_enter, daemon=True)
+        input_thread.start()
+        start_time = time.time()
+
+        try:
+            while not self.cmd.stop_flag:
+                if args.time > 0 and (time.time() - start_time) >= args.time:
+                    self.cmd.stop_flag = True
+                    break
+
+                frame = self.cmd.uhf_read_raw_frame(timeout=0.25)
+                if frame is None:
+                    continue
+                tag = self.cmd.uhf_parse_inventory_tag(frame)
+                if tag is None:
+                    continue
+
+                epc = tag.get("epc", "")
+                if len(epc) == 0:
+                    continue
+                cnt = int(tag.get("cnt", 1))
+                epc_counts[epc] = epc_counts.get(epc, 0) + max(1, cnt)
+        finally:
+            self.cmd.uhf_stop_inventory()
+            self.cmd.stop_flag = True
+
+        print("UHF inventory stopped")
+        _print_uhf_inventory_table(epc_counts)
 
 
 @hw.command("fw")

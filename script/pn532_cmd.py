@@ -2,6 +2,7 @@ import struct
 import ctypes
 from typing import Union
 import threading
+import time
 
 import pn532_com
 from unit.calc import crc16A, crc16Ccitt
@@ -1530,6 +1531,151 @@ class Pn532CMD:
                 break
         self.device.set_normal_mode()
         return resp
+
+    @staticmethod
+    def _uhf_checksum(frame_without_checksum: bytes) -> int:
+        return (-sum(frame_without_checksum)) & 0xFF
+
+    def _uhf_build_frame(self, cmd: int, payload: Union[bytes, bytearray, list, tuple, None] = None) -> bytes:
+        payload_bytes = bytes(payload or b"")
+        body = bytes([(len(payload_bytes) + 3) & 0xFF, 0x00, cmd & 0xFF]) + payload_bytes
+        checksum = self._uhf_checksum(bytes([0xA0]) + body)
+        return bytes([0xA0]) + body + bytes([checksum])
+
+    @staticmethod
+    def _uhf_parse_frame(frame: bytes):
+        if frame is None or len(frame) < 5:
+            return None
+        if frame[0] != 0xA0:
+            return None
+        if len(frame) != (frame[1] + 2):
+            return None
+        if (sum(frame) & 0xFF) != 0:
+            return None
+        data_len = frame[1] - 3
+        if data_len < 0:
+            return None
+        payload = frame[4 : 4 + data_len]
+        return {
+            "address": frame[2],
+            "cmd": frame[3],
+            "data": payload,
+            "frame": frame,
+        }
+
+    def _uhf_send_dataout(self, frame: bytes):
+        pn532_frame = self.device.make_data_frame_bytes(Command.InCommunicateThru, frame)
+        self.device.send_raw_frame(pn532_frame, wait_response=False)
+
+    def uhf_set_mode(self) -> bool:
+        resp = self.device.set_work_mode(0x10, 0x00, 0x00)
+        return resp.status == Status.SUCCESS
+
+    def uhf_read_raw_frame(self, timeout: float = 0.2):
+        return self.device.get_uhf_raw_frame(timeout=timeout)
+
+    def uhf_wait_frame(self, expect_cmd: Union[int, None] = None, timeout: float = 0.6):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            remaining = max(0.01, deadline - time.time())
+            frame = self.uhf_read_raw_frame(timeout=min(0.2, remaining))
+            if frame is None:
+                continue
+            parsed = self._uhf_parse_frame(frame)
+            if parsed is None:
+                continue
+            if expect_cmd is not None and parsed["cmd"] != (expect_cmd & 0xFF):
+                continue
+            return parsed
+        return None
+
+    def uhf_inventory_start(self) -> bool:
+        if not self.uhf_set_mode():
+            return False
+        self.device.clear_uhf_raw_frames()
+        self._uhf_send_dataout(self._uhf_build_frame(0x89, b"\x01"))
+        return True
+
+    def uhf_stop_inventory(self, timeout: float = 0.5):
+        self._uhf_send_dataout(self._uhf_build_frame(0x8C))
+        return self.uhf_wait_frame(expect_cmd=0x8C, timeout=timeout)
+
+    def uhf_get_version(self, timeout: float = 0.8):
+        if not self.uhf_set_mode():
+            return None
+        self.device.clear_uhf_raw_frames()
+        self._uhf_send_dataout(self._uhf_build_frame(0x72))
+        parsed = self.uhf_wait_frame(expect_cmd=0x72, timeout=timeout)
+        if parsed is None:
+            return None
+        payload = parsed["data"]
+        if len(payload) >= 3:
+            parsed["version"] = ".".join(str(int(x)) for x in payload[:3])
+        else:
+            parsed["version"] = payload.hex().upper()
+        return parsed
+
+    def uhf_reset_reader(self, timeout: float = 0.8):
+        if not self.uhf_set_mode():
+            return None
+        self.device.clear_uhf_raw_frames()
+        self._uhf_send_dataout(self._uhf_build_frame(0x70))
+        parsed = self.uhf_wait_frame(expect_cmd=0x70, timeout=timeout)
+        if parsed is None:
+            return None
+        payload = parsed["data"]
+        parsed["ok"] = len(payload) > 0 and payload[0] in (0x10, 0x12, 0x13)
+        return parsed
+
+    def uhf_parse_inventory_tag(self, frame: bytes):
+        parsed = self._uhf_parse_frame(frame)
+        if parsed is None:
+            return None
+
+        cmd = parsed["cmd"]
+        data = parsed["data"]
+        if cmd == 0x89:
+            if len(data) < 10:
+                return None
+            antenna = data[0]
+            pc = ((data[1] & 0xFF) << 8) | (data[2] & 0xFF)
+            epc_words = (pc >> 11) & 0x1F
+            epc_len = epc_words * 2
+            meta_offset = 3 + epc_len
+            if epc_len <= 0 or len(data) < meta_offset + 7:
+                return None
+            epc = data[3:meta_offset].hex().upper()
+            if not epc:
+                return None
+            return {
+                "cmd": cmd,
+                "epc": epc,
+                "cnt": 1,
+                "antenna": antenna,
+            }
+
+        if cmd == 0x8A:
+            if len(data) < 11:
+                return None
+            inv_data_len = data[0] & 0xFF
+            required_len = 1 + inv_data_len + 4 + 3 + 1 + 1
+            if data is None or len(data) < required_len or inv_data_len < 4:
+                return None
+            inv_data = data[1 : 1 + inv_data_len]
+            epc = inv_data[2 : inv_data_len - 2].hex().upper()
+            if not epc:
+                return None
+            offset = 1 + inv_data_len
+            antenna = data[offset + 7] & 0xFF
+            read_cnt = data[offset + 8] & 0xFF
+            return {
+                "cmd": cmd,
+                "epc": epc,
+                "cnt": max(1, read_cnt),
+                "antenna": antenna,
+            }
+
+        return None
 
     def ntag_reader(self):
         import webbrowser
