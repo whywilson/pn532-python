@@ -1733,8 +1733,9 @@ class Pn532CMD:
             return []
         
     stop_flag = False
-    def wait_for_enter(self):
-        print("Press Enter to stop...")
+    def wait_for_enter(self, silent: bool = False):
+        if not silent:
+            print("Press Enter to stop...")
         while not self.stop_flag:
             while True:
                 # if system is Windows
@@ -1743,14 +1744,16 @@ class Pn532CMD:
                         key = msvcrt.getch()
                         if key == b"\r":  # 检测回车键
                             self.stop_flag = True
-                            print("Stopping...")
+                            if not silent:
+                                print("Stopping...")
                             break
                 else:
                     if select.select([sys.stdin], [], [], 0.1)[0]:
                         key = sys.stdin.read(1)
                         if key == "\n":  # 检测回车键
                             self.stop_flag = True
-                            print("Stopping...")
+                            if not silent:
+                                print("Stopping...")
                             break
             sleep(0.1)
 

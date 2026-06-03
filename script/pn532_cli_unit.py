@@ -1,4 +1,5 @@
 import binascii
+import csv
 import os
 import re
 import subprocess
@@ -6,6 +7,7 @@ import argparse
 import timeit
 import sys
 import time
+import select
 from datetime import datetime
 import serial.tools.list_ports
 import json
@@ -152,6 +154,31 @@ def _print_uhf_inventory_table(epc_counts: dict[str, int]):
     print("-" * len(header))
     for idx, (epc, cnt) in enumerate(rows, start=1):
         print(f"{idx:>{idx_width}}  {epc:<{epc_width}}  {cnt:>{cnt_width}}")
+
+
+def _render_uhf_inventory_live(epc_counts: dict[str, int], start_time: float):
+    if sys.stdout.isatty():
+        # Clear and redraw so the table updates in place during inventory.
+        print("\033[2J\033[H", end="")
+    total_reads = sum(epc_counts.values())
+    elapsed = time.time() - start_time
+    print(f"{CY}UHF inventory running... Press OK(Enter) to stop...{C0}")
+    print("Hotkeys: Enter=stop, c=clear records")
+    print(f"Elapsed: {elapsed:.1f}s | Unique EPC: {len(epc_counts)} | Total Reads: {total_reads}")
+    _print_uhf_inventory_table(epc_counts)
+
+
+def _save_uhf_inventory_csv(csv_path: str, epc_counts: dict[str, int]) -> Path:
+    path = Path(csv_path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    rows = list(epc_counts.items())
+    with open(path, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["#", "EPC", "CNT"])
+        for idx, (epc, cnt) in enumerate(rows, start=1):
+            writer.writerow([idx, epc, cnt])
+    return path
 
 
 DEFAULT_MF_KEYS = [
@@ -2070,6 +2097,12 @@ class HWUhfInventory(DeviceRequiredUnit):
             default=0,
             help="Auto-stop after N seconds (0 means manual stop by OK/Enter)",
         )
+        parser.add_argument(
+            "--csv",
+            type=str,
+            default=None,
+            help="Save final inventory table to CSV file path",
+        )
         return parser
 
     def on_exec(self, args: argparse.Namespace):
@@ -2085,34 +2118,103 @@ class HWUhfInventory(DeviceRequiredUnit):
         print(f"{CY}UHF inventory started. Press OK(Enter) to stop...{C0}")
         epc_counts: dict[str, int] = {}
         self.cmd.stop_flag = False
-        input_thread = threading.Thread(target=self.cmd.wait_for_enter, daemon=True)
-        input_thread.start()
         start_time = time.time()
+        last_render_time = 0.0
+        render_interval = 0.35
+        tty_restore = None
+
+        # Put terminal in cbreak mode so Enter/c are received immediately.
+        if os.name != "nt" and sys.stdin.isatty():
+            try:
+                import tty
+                import termios
+
+                fd = sys.stdin.fileno()
+                old_attrs = termios.tcgetattr(fd)
+                tty.setcbreak(fd)
+                tty_restore = (fd, old_attrs)
+            except Exception:
+                tty_restore = None
+
+        _render_uhf_inventory_live(epc_counts, start_time)
 
         try:
             while not self.cmd.stop_flag:
+                now = time.time()
+
+                # Poll hotkeys inside the main loop to avoid stdin-thread conflicts.
+                if os.name == "nt":
+                    import msvcrt
+
+                    if msvcrt.kbhit():
+                        key = msvcrt.getwch()
+                        if key in ("\r", "\n"):
+                            self.cmd.stop_flag = True
+                            continue
+                        if key.lower() == "c":
+                            epc_counts.clear()
+                            _render_uhf_inventory_live(epc_counts, start_time)
+                            last_render_time = now
+                else:
+                    if select.select([sys.stdin], [], [], 0)[0]:
+                        key = sys.stdin.read(1)
+                        if key in ("\r", "\n"):
+                            self.cmd.stop_flag = True
+                            continue
+                        if key.lower() == "c":
+                            epc_counts.clear()
+                            _render_uhf_inventory_live(epc_counts, start_time)
+                            last_render_time = now
+
                 if args.time > 0 and (time.time() - start_time) >= args.time:
                     self.cmd.stop_flag = True
                     break
 
                 frame = self.cmd.uhf_read_raw_frame(timeout=0.25)
                 if frame is None:
+                    if now - last_render_time >= render_interval:
+                        _render_uhf_inventory_live(epc_counts, start_time)
+                        last_render_time = now
                     continue
                 tag = self.cmd.uhf_parse_inventory_tag(frame)
                 if tag is None:
+                    if now - last_render_time >= render_interval:
+                        _render_uhf_inventory_live(epc_counts, start_time)
+                        last_render_time = now
                     continue
 
                 epc = tag.get("epc", "")
                 if len(epc) == 0:
+                    if now - last_render_time >= render_interval:
+                        _render_uhf_inventory_live(epc_counts, start_time)
+                        last_render_time = now
                     continue
                 cnt = int(tag.get("cnt", 1))
                 epc_counts[epc] = epc_counts.get(epc, 0) + max(1, cnt)
+                if now - last_render_time >= render_interval:
+                    _render_uhf_inventory_live(epc_counts, start_time)
+                    last_render_time = now
         finally:
             self.cmd.uhf_stop_inventory()
             self.cmd.stop_flag = True
+            if tty_restore is not None:
+                try:
+                    import termios
 
+                    termios.tcsetattr(tty_restore[0], termios.TCSADRAIN, tty_restore[1])
+                except Exception:
+                    pass
+
+        _render_uhf_inventory_live(epc_counts, start_time)
         print("UHF inventory stopped")
         _print_uhf_inventory_table(epc_counts)
+
+        if args.csv:
+            try:
+                saved_path = _save_uhf_inventory_csv(args.csv, epc_counts)
+                print(f"CSV saved: {saved_path}")
+            except Exception as e:
+                print(f"{CR}Failed to save CSV: {e}{C0}")
 
 
 @hw.command("fw")
