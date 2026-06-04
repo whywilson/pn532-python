@@ -870,8 +870,20 @@ class Pn532CMD:
     def hf_15_read_block(self, block):
         command = b"\x01\x20" + bytes([block])
         resp = self.device.send_cmd_sync(Command.InDataExchange, command)
-        if len(resp.data) == 5 and resp.data[0] == 0x00:
-            return resp.data[1:]
+        if resp is None or len(resp.data) == 0:
+            return None
+
+        # Firmware variants may return:
+        # - [00, d0, d1, d2, d3]
+        # - [00, flags, d0, d1, d2, d3]
+        # - [d0, d1, d2, d3]
+        data = resp.data
+        if len(data) >= 6 and data[0] == 0x00:
+            return data[-4:]
+        if len(data) >= 5 and data[0] == 0x00:
+            return data[1:5]
+        if len(data) >= 4:
+            return data[-4:]
         return None
 
     def hf_15_write_block(self, block, data):
