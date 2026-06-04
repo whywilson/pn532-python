@@ -1242,7 +1242,8 @@ class HF15Rdbl(DeviceRequiredUnit):
         parser.description = "Read block data from ISO15693 tag"
         parser.add_argument(
             "-b",
-            "--block",
+            "--blk",
+            dest="blk",
             type=int,
             required=False,
             default=0,
@@ -1256,10 +1257,16 @@ class HF15Rdbl(DeviceRequiredUnit):
         if resp is None:
             print("ISO15693 Tag no found")
             return
-        block = args.block
+        block = args.blk
         resp = self.cmd.hf_15_read_block(block)
         if resp is not None:
-            print(f"Block {block}: {resp.hex().upper()}")
+            decode_str = ""
+            for byte in resp:
+                if 32 <= byte <= 126:
+                    decode_str += chr(byte)
+                else:
+                    decode_str += " "
+            print(f"{block:>2}: {resp.hex().upper()}    |    {decode_str}")
         else:
             print(f"Read block {block} failed")
 
