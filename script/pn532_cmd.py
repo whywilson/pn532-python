@@ -13,6 +13,7 @@ from pn532_enum import Pn532KillerCommand
 from pn532_enum import ButtonPressFunction, ButtonType, MifareClassicDarksideStatus
 from pn532_enum import MfcKeyType, MfcValueBlockOperator
 from time import sleep
+import time
 from pn532_utils import CC, CB, CG, C0, CY, CR
 from pn532_utils import NdefParser
 import os
@@ -760,6 +761,132 @@ class Pn532CMD:
         resp.parsed = parsed
         return parsed
     
+    def hf_mf_darkside(
+        self,
+        target_block: int,
+        target_type: MfcKeyType = MfcKeyType.A,
+        data_first: int = 0x01,
+    ):
+        """Native PN532Killer DarkSide nonce acquisition.
+
+        Sends the DarkSide command ONCE and reads the autonomously-generated
+        response frames that the PN532Killer firmware pushes every ~200ms.
+        Re-sending the command mid-flight would restart the process.
+
+        :param target_block: Target block number (0-0xFF)
+        :param target_type: Key type (MfcKeyType.A=0x60 or MfcKeyType.B=0x61)
+        :param data_first:  0x01 = first acquisition, 0x02 = second acquisition
+        :return: Parsed result dict on success, or error dict on failure
+        """
+        if self.device.get_device_name() != "PN532Killer":
+            raise ValueError("DarkSide is only supported on PN532Killer")
+
+        self.device.set_normal_mode()
+
+        cmd_code = Pn532KillerCommand.ReadUserDefData
+        payload = bytes([
+            0x03,
+            data_first & 0xFF,
+            target_type & 0xFF,
+            target_block & 0xFF,
+        ])
+
+        # Send command ONCE – do NOT re-send, that would restart the process.
+        self.device.send_cmd_auto(cmd_code, payload, timeout=90)
+
+        max_polls = 450
+        poll_interval = 0.2
+        poll_start = time.time()
+        last_resp_id = None
+        _progress = not DEBUG  # progress line only when debug frames are off
+        _pline = ""
+
+        for attempt in range(max_polls):
+            sleep(poll_interval)
+
+            if _progress:
+                el = time.time() - poll_start
+                _pline = f"\r  Working... [{el:.1f}s]"
+                sys.stdout.write(_pline + "\r")
+                sys.stdout.flush()
+
+            entry = self.device.wait_response_map.get(cmd_code)
+            if entry is None:
+                continue
+
+            resp = entry.get("response")
+            if resp is None:
+                continue
+
+            # Compare by object identity: each new frame creates a new Response
+            if id(resp) == last_resp_id:
+                continue
+            last_resp_id = id(resp)
+
+            data = resp.data
+
+            # Response payload may have a leading status byte (0x00 = success)
+            offset = 1 if len(data) > 0 and data[0] == 0x00 else 0
+            payload_data = data[offset:] if offset else data
+
+            if len(data) == 1:
+                code = data[0]
+                if code in (0x41, 0x42):
+                    if _progress:
+                        el = time.time() - poll_start
+                        _pline = f"\r  Working... [{el:.1f}s]"
+                        sys.stdout.write(_pline + "\r")
+                        sys.stdout.flush()
+                    continue
+                if code == 0x01:
+                    if _progress:
+                        sys.stdout.write(" " * len(_pline) + "\r")
+                        sys.stdout.flush()
+                    del self.device.wait_response_map[cmd_code]
+                    return {"error": "No card found", "code": code}
+                elif code == 0x31:
+                    if _progress:
+                        sys.stdout.write(" " * len(_pline) + "\r")
+                        sys.stdout.flush()
+                    del self.device.wait_response_map[cmd_code]
+                    return {"error": "Unstable Nt (PRNG unpredictable)", "code": code}
+                elif code == 0x32:
+                    if _progress:
+                        sys.stdout.write(" " * len(_pline) + "\r")
+                        sys.stdout.flush()
+                    del self.device.wait_response_map[cmd_code]
+                    return {"error": "No check bit (enc(nak) unavailable)", "code": code}
+                else:
+                    continue
+
+            if len(payload_data) >= 34:
+                if _progress:
+                    el = time.time() - poll_start
+                    sys.stdout.write(" " * len(_pline) + "\r")
+                    sys.stdout.write(f"\r  Acquired [{el:.1f}s]\n")
+                    sys.stdout.flush()
+                del self.device.wait_response_map[cmd_code]
+                parsed = {
+                    "uid":          payload_data[0:4],
+                    "target_type":  payload_data[4],
+                    "target_block": payload_data[5],
+                    "nt":           payload_data[6:10],       # 4 bytes
+                    "par":          payload_data[10:18],      # parity bits
+                    "ks_list":      payload_data[18:26],
+                    "nr_ar":        payload_data[26:34],      # encrypted reader response
+                }
+                return parsed
+
+            continue
+
+        # Cleanup on timeout
+        if cmd_code in self.device.wait_response_map:
+            del self.device.wait_response_map[cmd_code]
+        if _progress:
+            sys.stdout.write(" " * len(_pline) + "\r")
+            sys.stdout.flush()
+        return {"error": "Timeout (no valid response within 30s)", "code": -1}
+
     @expect_response(Status.SUCCESS)
     def hf_mf_esetuid(self, slot, uid: bytes):
         """

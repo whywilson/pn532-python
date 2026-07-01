@@ -3339,31 +3339,99 @@ class HfMfAutopwn(DeviceRequiredUnit):
 class HfMfDarkside(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
-        parser.description = "Darkside-like automatic recovery entry (uses available sniff/mfkey paths)."
+        parser.description = "DarkSide nonce acquisition (native on PN532Killer, falls back to sniff/mfkey on standard PN532)."
+        parser.add_argument(
+            "--block",
+            type=int,
+            required=True,
+            metavar="<dec>",
+            help="Target block (0-0xFF)",
+        )
+        parser.add_argument(
+            "--key-type",
+            choices=["A", "a", "B", "b"],
+            default="A",
+            help="Key type (default: A)",
+        )
         parser.add_argument(
             "--show-raw",
             action="store_true",
-            help="Display captured tuples and helper outputs",
+            help="Display raw acquired data",
         )
         return parser
 
     def on_exec(self, args: argparse.Namespace):
-        print(f"{CY}Trying no-card nonce path (mfkey32v2)...{C0}")
-        unit32 = HfMfMfkey32v2()
-        unit32.device_com = self.device_com
-        before = len(self.cmd.hf_sniff_get_mfkey_entries(with_card=False))
-        unit32.on_exec(argparse.Namespace(show_raw=args.show_raw))
-        after = len(self.cmd.hf_sniff_get_mfkey_entries(with_card=False))
-        if before >= 2 or after >= 2:
+        is_killer = self.device_com.get_device_name() == "PN532Killer"
+        if not is_killer:
+            print(f"{CY}Trying no-card nonce path (mfkey32v2)...{C0}")
+            unit32 = HfMfMfkey32v2()
+            unit32.device_com = self.device_com
+            before = len(self.cmd.hf_sniff_get_mfkey_entries(with_card=False))
+            unit32.on_exec(argparse.Namespace(show_raw=args.show_raw))
+            after = len(self.cmd.hf_sniff_get_mfkey_entries(with_card=False))
+            if before >= 2 or after >= 2:
+                return
+            print(f"{CY}No sufficient no-card tuples, trying card-present path (mfkey64)...{C0}")
+            unit64 = HfMfMfkey64()
+            unit64.device_com = self.device_com
+            unit64.on_exec(argparse.Namespace(show_raw=args.show_raw))
+            print(
+                f"{CY}Note: native darkside not available on this device; used mfkey pipeline instead.{C0}"
+            )
             return
 
-        print(f"{CY}No sufficient no-card tuples, trying card-present path (mfkey64)...{C0}")
-        unit64 = HfMfMfkey64()
-        unit64.device_com = self.device_com
-        unit64.on_exec(argparse.Namespace(show_raw=args.show_raw))
-        print(
-            f"{CY}Note: native darkside nonce acquisition is not wired yet; this command currently orchestrates available mfkey pipelines.{C0}"
+        key_type_val = MfcKeyType.A if args.key_type.upper() == "A" else MfcKeyType.B
+        target_block = args.block & 0xFF
+        key_label = args.key_type.upper()
+
+        # Phase 1: first acquisition (data_first=0x01)
+        print(f"{CY}DarkSide phase 1/2 (first acquisition) - block {target_block}, key {key_label}...{C0}")
+        result1 = self.cmd.hf_mf_darkside(
+            target_block=target_block,
+            target_type=key_type_val,
+            data_first=0x01,
         )
+
+        if "error" in result1:
+            print(f"{CR}Phase 1 failed: {result1['error']} (code 0x{result1.get('code', 0):02X}){C0}")
+            return
+
+        if args.show_raw:
+            print(f"\n{CG}--- Phase 1 result ---{C0}")
+            print(f"  UID:        {result1['uid'].hex().upper()}")
+            print(f"  Type:       0x{result1['target_type']:02X}")
+            print(f"  Block:      {result1['target_block']}")
+            print(f"  Nt:         {result1['nt'].hex().upper()}")
+            print(f"  Par:        {result1['par'].hex().upper()}")
+            print(f"  KS list:    {result1['ks_list'].hex().upper()}")
+            print(f"  NR AR:      {result1['nr_ar'].hex().upper()}")
+
+        # Phase 2: second acquisition (data_first=0x02)
+        print(f"{CY}DarkSide phase 2/2 (second acquisition)...{C0}")
+        result2 = self.cmd.hf_mf_darkside(
+            target_block=target_block,
+            target_type=key_type_val,
+            data_first=0x02,
+        )
+
+        if "error" in result2:
+            print(f"{CR}Phase 2 failed: {result2['error']} (code 0x{result2.get('code', 0):02X}){C0}")
+            return
+
+        if args.show_raw:
+            print(f"\n{CG}--- Phase 2 result ---{C0}")
+            print(f"  UID:        {result2['uid'].hex().upper()}")
+            print(f"  Type:       0x{result2['target_type']:02X}")
+            print(f"  Block:      {result2['target_block']}")
+            print(f"  Nt:         {result2['nt'].hex().upper()}")
+            print(f"  Par:        {result2['par'].hex().upper()}")
+            print(f"  KS list:    {result2['ks_list'].hex().upper()}")
+            print(f"  NR AR:      {result2['nr_ar'].hex().upper()}")
+
+        print(f"\n{CG}DarkSide acquisition complete.{C0}")
+        print(f"  Phase 1 Nt:  {result1['nt'].hex().upper()}")
+        print(f"  Phase 2 Nt:  {result2['nt'].hex().upper()}")
+        print(f"  KS (both phases available for mfkey pipeline)")
 
 
 @hf_mf.command("hardnested")
