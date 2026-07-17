@@ -93,6 +93,7 @@ PN532KillerCapabilities = [
     "HfSniffSetUid",
     "HF15Gen1Uid",
     "HF15Gen2Uid",
+    "HF15Gen3Uid",
     "HF15Gen2Config",
     "HF15Eread",
     "HF15ESetUid",

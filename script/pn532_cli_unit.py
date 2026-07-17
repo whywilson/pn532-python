@@ -1514,6 +1514,44 @@ class HF15Gen2Uid(DeviceRequiredUnit):
         print(f"Set UID to {uid} {CY}{'Success' if resp else 'Fail'}{C0}")
 
 
+@hf_15.command("gen3uid")
+class HF15Gen3Uid(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = (
+            "Set UID of 80-block Gen3 Magic ISO15693 tag; "
+            "preserves required blocks 20/21"
+        )
+        parser.add_argument(
+            "-u",
+            type=str,
+            required=True,
+            metavar="<hex>",
+            help="UID to set (8 bytes, starting with E0)",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        uid = args.u
+        if not re.fullmatch(r"[a-fA-F0-9]{16}", uid):
+            print("UID must be 8 bytes hex")
+            return
+        if not uid.lower().startswith("e0"):
+            print("UID must start with E0")
+            return
+        if self.cmd.hf_15_scan() is None:
+            print("ISO15693 Tag no found")
+            return
+
+        valid_gen3, reason = self.cmd.hf_15_check_gen3()
+        if not valid_gen3:
+            print(f"Refusing Gen3 UID write: {reason}")
+            return
+
+        resp = self.cmd.hf_15_set_gen3_uid(bytes.fromhex(uid))
+        print(f"Set UID to {uid.upper()} {CY}{'Success' if resp else 'Fail'}{C0}")
+
+
 @hf_15.command("gen2config")
 class HF15Gen2Config(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:

@@ -187,7 +187,7 @@ class Pn532CLI:
                     ),
                     (
                         "[Magic Tag Operations]",
-                        ["gen1uid", "gen2uid", "gen2config"],
+                        ["gen1uid", "gen2uid", "gen3uid", "gen2config"],
                     ),
                     (
                         "[Emulator Slot Operations]",
