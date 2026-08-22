@@ -67,6 +67,7 @@ PN532Capabilities = [
     "HfMfuDump",
     "Hf14aGen4Pwd",
     "HfMfuSetUid",
+    "HfMfuRecover",
     "HfMfuEread",
     "HfMfChk",
     "HfMfFchk",

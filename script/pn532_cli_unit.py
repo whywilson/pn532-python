@@ -4391,3 +4391,51 @@ examples:
                 print(f"Updated  UID: {CG}{uid.hex().upper()}{C0}")
             else:
                 print("Failed to read original Block0")
+
+
+@hf_mfu.command("recover")
+class HfMfuRecover(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = (
+            "Recover invalid UID BCC on a DirectWrite 7-byte Type 2 tag"
+        )
+        parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Inspect the tag and show repaired pages without writing",
+        )
+        parser.epilog = """
+examples:
+    hf mfu recover --dry-run
+    hf mfu recover
+"""
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        print(f"{CY}Raw-selecting the tag without BCC validation...{C0}")
+        try:
+            result = self.cmd.hf_mfu_recover_uid(dry_run=args.dry_run)
+        except RuntimeError as error:
+            print(f"{CR}Recovery failed: {error}{C0}")
+            return
+
+        print(f" UID: {result['uid'].hex().upper()}")
+        print(
+            " BCC: "
+            f"CL1 {'valid' if result['bcc0_valid'] else 'invalid'}, "
+            f"CL2 {'valid' if result['bcc1_valid'] else 'invalid'}"
+        )
+        for page, (before, after) in enumerate(
+            zip(result["pages_before"], result["pages_after"])
+        ):
+            marker = " -> " if before != after else "    "
+            suffix = after.hex().upper() if before != after else ""
+            print(f" page {page}: {before.hex().upper()}{marker}{suffix}")
+
+        if not result["needs_recovery"]:
+            print(f"{CG}UID BCC is already correct; nothing was written.{C0}")
+        elif args.dry_run:
+            print(f"{CY}Dry run only; nothing was written.{C0}")
+        elif result["verified"]:
+            print(f"{CG}UID BCC recovered and verified by normal ISO14443-A scan.{C0}")

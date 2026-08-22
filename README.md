@@ -56,6 +56,7 @@ pn532_cli_main.exe --debug
 - [x] Read and write MiFare Ultralight
 - [x] Magic commands for Gen1a, Gen3, Gen4 UMC
 - [x] Send ISO14443A raw commands
+- [x] Recover invalid UID BCC on DirectWrite Type 2 tags (`hf mfu recover`)
 - [x] NTAG Emulate
 
 ### PN532Killer

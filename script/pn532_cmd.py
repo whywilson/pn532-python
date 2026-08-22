@@ -301,6 +301,168 @@ class Pn532CMD:
             )
         return resp
 
+    @staticmethod
+    def _mfu_uid_pages(uid: bytes, page2_tail: bytes) -> list[bytes]:
+        """Build UID pages 0-2 while preserving the non-UID bytes in page 2."""
+        if len(uid) != 7:
+            raise ValueError("MIFARE Ultralight UID must be 7 bytes")
+        if len(page2_tail) != 3:
+            raise ValueError("Page 2 tail must be 3 bytes")
+        bcc0 = 0x88 ^ uid[0] ^ uid[1] ^ uid[2]
+        bcc1 = uid[3] ^ uid[4] ^ uid[5] ^ uid[6]
+        return [
+            uid[:3] + bytes([bcc0]),
+            uid[3:],
+            bytes([bcc1]) + page2_tail,
+        ]
+
+    @staticmethod
+    def _require_iso14443a_crc(data: bytes, payload_length: int, label: str) -> bytes:
+        if len(data) < payload_length + 2:
+            raise RuntimeError(
+                f"{label} returned {len(data)} bytes, expected {payload_length + 2}"
+            )
+        payload = bytes(data[:payload_length])
+        received_crc = bytes(data[payload_length:payload_length + 2])
+        if received_crc != crc16A(payload):
+            raise RuntimeError(f"{label} returned an invalid CRC")
+        return payload
+
+    def _mfu_select_7b_uid_ignoring_bcc(self) -> dict:
+        """Manually select a 7-byte UID tag without validating either BCC byte."""
+        options = {
+            "activate_rf_field": 0,
+            "wait_response": 1,
+            "append_crc": 0,
+            "auto_select": 0,
+            "keep_rf_field": 1,
+            "check_response_crc": 0,
+        }
+
+        # InListPassiveTarget reliably starts the PN532 RF field, even though its
+        # built-in anticollision rejects the broken BCC. Reset its framing state
+        # before taking over the anticollision sequence in the host.
+        self.device.set_normal_mode()
+        self.device.send_cmd_sync(
+            Command.InListPassiveTarget, b"\x01\x00", timeout=0.3
+        )
+        self.device.halt()
+        self.device.halt()
+
+        atqa = b""
+        cl1 = b""
+        for _ in range(3):
+            atqa = bytes(
+                self.hf14a_raw(options, 500, b"\x52", bitlen=7) or b""
+            )
+            if len(atqa) != 2:
+                time.sleep(0.05)
+                continue
+            cl1 = bytes(self.hf14a_raw(options, 500, b"\x93\x20") or b"")
+            if len(cl1) == 5:
+                break
+            time.sleep(0.05)
+        if len(atqa) != 2 or len(cl1) != 5:
+            raise RuntimeError("Could not receive the tag's CL1 anticollision response")
+        if cl1[0] != 0x88:
+            raise RuntimeError("Recovery only supports 7-byte UID Type 2 tags")
+
+        options["append_crc"] = 1
+        sak1_raw = bytes(
+            self.hf14a_raw(options, 500, b"\x93\x70" + cl1) or b""
+        )
+        sak1 = self._require_iso14443a_crc(sak1_raw, 1, "CL1 SELECT")
+        if not sak1[0] & 0x04:
+            raise RuntimeError("Tag did not indicate UID cascade level 2")
+
+        options["append_crc"] = 0
+        cl2 = bytes(self.hf14a_raw(options, 500, b"\x95\x20") or b"")
+        if len(cl2) != 5:
+            raise RuntimeError("Could not receive the tag's CL2 anticollision response")
+
+        options["append_crc"] = 1
+        sak2_raw = bytes(
+            self.hf14a_raw(options, 500, b"\x95\x70" + cl2) or b""
+        )
+        sak2 = self._require_iso14443a_crc(sak2_raw, 1, "CL2 SELECT")
+        if sak2[0] & 0x04:
+            raise RuntimeError("Recovery only supports 7-byte UIDs")
+        if sak2[0] != 0x00:
+            raise RuntimeError(
+                f"Recovery only supports Type 2 tags with SAK 00 (got {sak2[0]:02X})"
+            )
+
+        uid = cl1[1:4] + cl2[:4]
+        return {
+            "atqa": atqa,
+            "sak": sak2,
+            "uid": uid,
+            "cl1": cl1,
+            "cl2": cl2,
+            "bcc0_valid": cl1[4] == (cl1[0] ^ cl1[1] ^ cl1[2] ^ cl1[3]),
+            "bcc1_valid": cl2[4] == (cl2[0] ^ cl2[1] ^ cl2[2] ^ cl2[3]),
+        }
+
+    def hf_mfu_recover_uid(self, dry_run: bool = False) -> dict:
+        """Recover UID/BCC pages on a DirectWrite 7-byte Type 2 tag."""
+        tag = self._mfu_select_7b_uid_ignoring_bcc()
+        options = {
+            "activate_rf_field": 0,
+            "wait_response": 1,
+            "append_crc": 1,
+            "auto_select": 0,
+            "keep_rf_field": 1,
+            "check_response_crc": 0,
+        }
+        read_raw = bytes(self.hf14a_raw(options, 500, b"\x30\x00") or b"")
+        first_four_pages = self._require_iso14443a_crc(read_raw, 16, "READ page 0")
+
+        uid = tag["uid"]
+        if first_four_pages[:3] != uid[:3] or first_four_pages[4:8] != uid[3:]:
+            raise RuntimeError("Anticollision UID does not match pages 0 and 1")
+        pages_before = [first_four_pages[i:i + 4] for i in range(0, 12, 4)]
+        pages_after = self._mfu_uid_pages(uid, pages_before[2][1:])
+        needs_recovery = pages_before != pages_after
+
+        result = {
+            **tag,
+            "pages_before": pages_before,
+            "pages_after": pages_after,
+            "needs_recovery": needs_recovery,
+            "written": False,
+            "verified": False,
+        }
+        if dry_run or not needs_recovery:
+            return result
+
+        for page, page_data in enumerate(pages_after):
+            ack = bytes(
+                self.hf14a_raw(
+                    options,
+                    500,
+                    bytes([MifareCommand.MfWrite4Bytes, page]) + page_data,
+                )
+                or b""
+            )
+            if not ack or ack[0] & 0x0F != 0x0A:
+                raise RuntimeError(
+                    f"Tag did not ACK page {page} write (response: {ack.hex().upper() or 'none'})"
+                )
+        result["written"] = True
+
+        # A field restart makes the PN532 run normal anticollision with the new BCC.
+        self.device.send_cmd_sync(Command.RFConfiguration, b"\x01\x00", timeout=0.5)
+        time.sleep(0.05)
+        self.device.send_cmd_sync(Command.RFConfiguration, b"\x01\x01", timeout=0.5)
+        time.sleep(0.05)
+        scan = self.hf_14a_scan()
+        result["verified"] = bool(scan and scan[0].get("uid") == uid)
+        if not result["verified"]:
+            raise RuntimeError(
+                "Pages were written, but normal ISO14443-A verification failed"
+            )
+        return result
+
     def isGen1a(self):
         options = {
             "activate_rf_field": 1,
