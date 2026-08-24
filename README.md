@@ -62,6 +62,7 @@ pn532_cli_main.exe --debug
 ### PN532Killer
 - [x] Tag Reader (MF1, Icode, EM4100)
 - [x] Tag Emulator
+- [x] Recover invalid UID BCC on DirectWrite Type 2 tags (`hf mfu recover`)
 - [x] MFkey32v2
 - [x] MFkey64
 - [x] Staticnested attack

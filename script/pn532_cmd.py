@@ -328,8 +328,54 @@ class Pn532CMD:
             raise RuntimeError(f"{label} returned an invalid CRC")
         return payload
 
+    def _reconnect_pn532killer(self, port: str, timeout: float = 3.0) -> None:
+        """Wait for a PN532Killer USB UART to re-enumerate, then reopen it."""
+        if not port:
+            raise RuntimeError("PN532Killer connection has no reusable port")
+        self.device.close()
+        deadline = time.monotonic() + timeout
+        last_error = None
+        while time.monotonic() < deadline:
+            time.sleep(0.15)
+            try:
+                self.device.open(port)
+                if self.device.isOpen():
+                    return
+            except Exception as error:
+                last_error = error
+        detail = f": {last_error}" if last_error else ""
+        raise RuntimeError(f"PN532Killer USB reconnect timed out{detail}")
+
+    def _prepare_pn532killer_reader(self) -> None:
+        """Enter Killer reader mode, recovering from one transient USB reset."""
+        port = getattr(self.device, "port_string", None)
+        last_detail = "no response"
+        for attempt in range(2):
+            try:
+                mode_response = self.device.set_work_mode()
+                if mode_response.status == Status.SUCCESS:
+                    time.sleep(0.35)
+                    if not self.device.isOpen():
+                        last_detail = "USB disconnected after SetWorkMode"
+                    else:
+                        sam_response = self.device.set_normal_mode()
+                        if sam_response.status == Status.SUCCESS:
+                            time.sleep(0.05)
+                            return
+                        last_detail = f"SAMConfiguration status {sam_response.status}"
+                else:
+                    last_detail = f"SetWorkMode status {mode_response.status}"
+            except Exception as error:
+                last_detail = str(error)
+
+            if attempt == 0:
+                self._reconnect_pn532killer(port)
+
+        raise RuntimeError(f"Could not initialize PN532Killer reader mode ({last_detail})")
+
     def _mfu_select_7b_uid_ignoring_bcc(self) -> dict:
         """Manually select a 7-byte UID tag without validating either BCC byte."""
+        is_pn532killer = self.device.get_device_name() == "PN532Killer"
         options = {
             "activate_rf_field": 0,
             "wait_response": 1,
@@ -339,15 +385,21 @@ class Pn532CMD:
             "check_response_crc": 0,
         }
 
-        # InListPassiveTarget reliably starts the PN532 RF field, even though its
-        # built-in anticollision rejects the broken BCC. Reset its framing state
-        # before taking over the anticollision sequence in the host.
-        self.device.set_normal_mode()
-        self.device.send_cmd_sync(
-            Command.InListPassiveTarget, b"\x01\x00", timeout=0.3
-        )
-        self.device.halt()
-        self.device.halt()
+        if is_pn532killer:
+            # Killer firmware requires its vendor reader mode before SAM setup.
+            # InListPassiveTarget must not be used here: invalid BCC can leave its
+            # command dispatcher blocked instead of returning a no-tag response.
+            self._prepare_pn532killer_reader()
+        else:
+            # InListPassiveTarget reliably starts the PN532 RF field, even though
+            # the PN532 rejects the broken BCC. Reset its framing state before
+            # taking over the anticollision sequence in the host.
+            self.device.set_normal_mode()
+            self.device.send_cmd_sync(
+                Command.InListPassiveTarget, b"\x01\x00", timeout=0.3
+            )
+            self.device.halt()
+            self.device.halt()
 
         atqa = b""
         cl1 = b""
@@ -355,14 +407,15 @@ class Pn532CMD:
             atqa = bytes(
                 self.hf14a_raw(options, 500, b"\x52", bitlen=7) or b""
             )
-            if len(atqa) != 2:
+            expected_atqa = len(atqa) >= 2 if is_pn532killer else len(atqa) == 2
+            if not expected_atqa:
                 time.sleep(0.05)
                 continue
             cl1 = bytes(self.hf14a_raw(options, 500, b"\x93\x20") or b"")
             if len(cl1) == 5:
                 break
             time.sleep(0.05)
-        if len(atqa) != 2 or len(cl1) != 5:
+        if len(atqa) < 2 or len(cl1) != 5:
             raise RuntimeError("Could not receive the tag's CL1 anticollision response")
         if cl1[0] != 0x88:
             raise RuntimeError("Recovery only supports 7-byte UID Type 2 tags")
@@ -394,7 +447,7 @@ class Pn532CMD:
 
         uid = cl1[1:4] + cl2[:4]
         return {
-            "atqa": atqa,
+            "atqa": atqa[:2],
             "sak": sak2,
             "uid": uid,
             "cl1": cl1,
@@ -405,6 +458,7 @@ class Pn532CMD:
 
     def hf_mfu_recover_uid(self, dry_run: bool = False) -> dict:
         """Recover UID/BCC pages on a DirectWrite 7-byte Type 2 tag."""
+        is_pn532killer = self.device.get_device_name() == "PN532Killer"
         tag = self._mfu_select_7b_uid_ignoring_bcc()
         options = {
             "activate_rf_field": 0,
@@ -435,6 +489,7 @@ class Pn532CMD:
         if dry_run or not needs_recovery:
             return result
 
+        write_responses = []
         for page, page_data in enumerate(pages_after):
             ack = bytes(
                 self.hf14a_raw(
@@ -444,17 +499,37 @@ class Pn532CMD:
                 )
                 or b""
             )
-            if not ack or ack[0] & 0x0F != 0x0A:
+            write_responses.append(ack)
+            is_ack = bool(ack) and ack[0] & 0x0F == 0x0A
+            # PN532Killer reports 0x05 for the Type 2 tag's 4-bit ACK even when
+            # the write succeeds. Treat it as provisional and require readback.
+            is_killer_framing_status = is_pn532killer and ack == b"\x05"
+            if not is_ack and not is_killer_framing_status:
                 raise RuntimeError(
                     f"Tag did not ACK page {page} write (response: {ack.hex().upper() or 'none'})"
                 )
+
+        verify_raw = bytes(self.hf14a_raw(options, 500, b"\x30\x00") or b"")
+        verify_pages = self._require_iso14443a_crc(
+            verify_raw, 16, "Post-write READ page 0"
+        )
+        if verify_pages[:12] != b"".join(pages_after):
+            raise RuntimeError("Post-write pages 0-2 do not match the recovery data")
         result["written"] = True
+        result["write_responses"] = write_responses
 
         # A field restart makes the PN532 run normal anticollision with the new BCC.
-        self.device.send_cmd_sync(Command.RFConfiguration, b"\x01\x00", timeout=0.5)
-        time.sleep(0.05)
-        self.device.send_cmd_sync(Command.RFConfiguration, b"\x01\x01", timeout=0.5)
-        time.sleep(0.05)
+        if is_pn532killer:
+            self._prepare_pn532killer_reader()
+        else:
+            self.device.send_cmd_sync(
+                Command.RFConfiguration, b"\x01\x00", timeout=0.5
+            )
+            time.sleep(0.05)
+            self.device.send_cmd_sync(
+                Command.RFConfiguration, b"\x01\x01", timeout=0.5
+            )
+            time.sleep(0.05)
         scan = self.hf_14a_scan()
         result["verified"] = bool(scan and scan[0].get("uid") == uid)
         if not result["verified"]:

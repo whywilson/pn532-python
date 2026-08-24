@@ -238,7 +238,7 @@ class Pn532Com:
         return body, b""
 
     # PN532Killer
-    def set_work_mode(self, mode: PN532KillerMode = PN532KillerMode.READER, type=PN532KillerTagType.MFC, index=0) -> response:
+    def set_work_mode(self, mode: PN532KillerMode = PN532KillerMode.READER, type=0, index=0) -> response:
         response = self.send_cmd_sync(
             Pn532KillerCommand.SetWorkMode, [mode.value, type, index]
         )
