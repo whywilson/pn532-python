@@ -63,6 +63,18 @@ class Pn532CMD:
             "body_prefix_len": body_prefix_len,
         }
 
+    def _restart_iso14443a_field(self) -> None:
+        """Turn the PN532 RF field off and back on without selecting a tag."""
+        self.device.send_cmd_sync(
+            Command.RFConfiguration, b"\x01\x00", timeout=0.5
+        )
+        time.sleep(0.05)
+        self.device.send_cmd_sync(
+            Command.RFConfiguration, b"\x01\x01", timeout=0.5
+        )
+        time.sleep(0.05)
+        self.device.reset_register()
+
     @expect_response(Status.SUCCESS)
     def hf_14a_scan(self):
         self.device.set_normal_mode()
@@ -562,6 +574,421 @@ class Pn532CMD:
             if resp_data[-1] == 0x0A:
                 return True
         return False
+
+    @staticmethod
+    def parse_gdm_config(config: bytes) -> dict:
+        """Decode the 16-byte USCUID/GDM configuration block."""
+        config = bytes(config)
+        if len(config) != 16:
+            raise ValueError("GDM configuration must be exactly 16 bytes")
+
+        personalization_names = {
+            0x5A: "unfused",
+            0xC3: "UIDF0 (7-byte UID)",
+            0xA5: "UIDF1 (7-byte UID, selection shortcut)",
+            0x87: "UIDF2 (4-byte random UID)",
+            0x69: "UIDF3 (4-byte NUID)",
+        }
+        return {
+            "raw": config,
+            "magic_wakeup_enabled": config[:2] != b"\x85\x00",
+            "config_access_enabled": config[:2] == b"\x7A\xFF",
+            "wakeup_style": "gdm" if config[2] == 0x85 else "gen1a",
+            "key_b_blocked": config[6] == 0x5A,
+            "cuid": config[7] == 0x5A,
+            "personalization": config[9],
+            "personalization_name": personalization_names.get(
+                config[9], "4-byte UID from block 0"
+            ),
+            "shadow": config[10] == 0x5A,
+            "magic_auth": config[11] == 0x5A,
+            "static_encrypted_nonce": config[12] == 0x5A,
+            "signature_sector": config[13] == 0x5A,
+            "sak": config[15],
+        }
+
+    @staticmethod
+    def _gdm_wakeup_bytes(mode: str) -> tuple[int, int]:
+        wakeups = {
+            "gdm": (0x20, 0x23),
+            "gen1a": (0x40, 0x43),
+        }
+        try:
+            return wakeups[mode]
+        except KeyError as error:
+            raise ValueError("GDM wakeup mode must be 'gdm' or 'gen1a'") from error
+
+    def _gdm_acknowledged(self, response: bytes) -> bool:
+        response = bytes(response or b"")
+        if response and response[-1] & 0x0F == 0x0A:
+            return True
+        # PN532Killer exposes a framing status for some 4-bit tag ACKs. Any
+        # operation accepting it must still perform a full readback check.
+        return self.device.get_device_name() == "PN532Killer" and response == b"\x05"
+
+    @staticmethod
+    def _gdm_raw_options(activate_rf_field: bool, append_crc: bool) -> dict:
+        return {
+            "activate_rf_field": int(activate_rf_field),
+            "wait_response": 1,
+            "append_crc": int(append_crc),
+            "auto_select": 0,
+            "keep_rf_field": 1,
+            "check_response_crc": 0,
+        }
+
+    def _gdm_wakeup(self, mode: str) -> None:
+        """Enter a USCUID/GDM backdoor using the unencrypted wakeup styles."""
+        first, second = self._gdm_wakeup_bytes(mode)
+        response = self.hf14a_raw(
+            self._gdm_raw_options(True, False),
+            500,
+            bytes([first]),
+            bitlen=7,
+        )
+        if not self._gdm_acknowledged(response):
+            raise RuntimeError(
+                f"Tag did not acknowledge {mode} wakeup step 1 ({first:02X}/7-bit)"
+            )
+
+        response = self.hf14a_raw(
+            self._gdm_raw_options(False, False), 500, bytes([second])
+        )
+        if not self._gdm_acknowledged(response):
+            raise RuntimeError(
+                f"Tag did not acknowledge {mode} wakeup step 2 ({second:02X})"
+            )
+
+    def _gdm_magic_auth(self, key: bytes = bytes(6)) -> bytes:
+        """Select a tag and run the GDM 0x80 authentication in the PN532 CIU."""
+        key = bytes(key)
+        if len(key) != 6:
+            raise ValueError("GDM magic-auth key must be exactly 6 bytes")
+
+        scan = self.hf_14a_scan()
+        if not scan:
+            raise RuntimeError("No ISO14443-A tag found for GDM magic authentication")
+        uid = bytes(scan[0]["uid"])
+        if len(uid) < 4:
+            raise RuntimeError("GDM magic authentication requires at least a 4-byte UID")
+
+        # The PN532 InDataExchange firmware only recognizes standard 0x60/0x61
+        # MIFARE authentication. Drive the CIU MFAuthent command directly so the
+        # hardware Crypto1 engine can authenticate the GDM-specific 0x80 command.
+        auth_payload = b"\x80\x00" + key + uid[-4:]
+        register_writes = [
+            (0x6331, 0x00),  # CommandReg: Idle
+            (0x6334, 0x7F),  # CommIrqReg: clear IRQ flags
+            (0x633A, 0x80),  # FIFOLevelReg: flush FIFO
+            *((0x6339, value) for value in auth_payload),
+            (0x6331, 0x0E),  # CommandReg: MFAuthent
+        ]
+        write_data = b"".join(
+            bytes([(address >> 8) & 0xFF, address & 0xFF, value])
+            for address, value in register_writes
+        )
+        response = self.device.send_cmd_sync(
+            Command.WriteRegister, write_data, timeout=0.5
+        )
+        if response.status != Status.SUCCESS:
+            raise RuntimeError("PN532 rejected the GDM CIU authentication setup")
+
+        read_data = bytes.fromhex("633463366338")
+        deadline = time.monotonic() + 0.5
+        registers = b""
+        while time.monotonic() < deadline:
+            response = self.device.send_cmd_sync(
+                Command.ReadRegister, read_data, timeout=0.5
+            )
+            if response.status != Status.SUCCESS or len(response.data) < 3:
+                raise RuntimeError("Could not read PN532 GDM authentication status")
+            registers = bytes(response.data[:3])
+            comm_irq, _error, status2 = registers
+            if comm_irq & 0x13:
+                if status2 & 0x08:
+                    return uid
+                break
+            time.sleep(0.005)
+
+        detail = registers.hex().upper() or "no status"
+        raise RuntimeError(f"GDM 0x80 magic authentication failed ({detail})")
+
+    def _gdm_read_magic_active(self, command: int, block: int) -> bytes:
+        # InListPassiveTarget configured hardware CRC and _gdm_magic_auth enabled
+        # Crypto1, so send only the two plaintext command bytes here.
+        response = self.device.send_cmd_sync(
+            Command.InCommunicateThru, bytes([command, block]), timeout=1.0
+        )
+        if response.status != Status.HF_TAG_OK or len(response.data) != 16:
+            data = response.data.hex().upper() if response.data else "none"
+            raise RuntimeError(
+                f"GDM authenticated read failed (status {response.status}, data {data})"
+            )
+        return bytes(response.data)
+
+    @staticmethod
+    def _require_gdm_magic_ack(response: Response, label: str) -> None:
+        data = bytes(response.data or b"")
+        if response.status != Status.HF_TAG_OK or not data or data[0] & 0x0F != 0x0A:
+            detail = data.hex().upper() or "none"
+            raise RuntimeError(
+                f"{label} was not acknowledged (status {response.status}, data {detail})"
+            )
+
+    def _gdm_write_config_magic(self, data: bytes, key: bytes = bytes(6)) -> bytes:
+        """Write GDM config through 0x80 auth, working around 4-bit ACK CRC."""
+        data = bytes(data)
+        if len(data) != 16:
+            raise ValueError("GDM configuration must be exactly 16 bytes")
+
+        old_rx_mode = None
+        try:
+            self._gdm_magic_auth(key)
+            response = self.device.send_cmd_sync(
+                Command.ReadRegister, bytes.fromhex("6303"), timeout=0.5
+            )
+            if response.status != Status.SUCCESS or not response.data:
+                raise RuntimeError("Could not read PN532 RxModeReg")
+            old_rx_mode = response.data[0]
+            response = self.device.send_cmd_sync(
+                Command.WriteRegister,
+                bytes([0x63, 0x03, old_rx_mode & 0x7F]),
+                timeout=0.5,
+            )
+            if response.status != Status.SUCCESS:
+                raise RuntimeError("Could not disable PN532 receive CRC checking")
+
+            response = self.device.send_cmd_sync(
+                Command.InCommunicateThru, b"\xE1\x00", timeout=1.0
+            )
+            self._require_gdm_magic_ack(response, "GDM configuration write command")
+            response = self.device.send_cmd_sync(
+                Command.InCommunicateThru, data, timeout=1.0
+            )
+            self._require_gdm_magic_ack(response, "GDM configuration write data")
+        finally:
+            if old_rx_mode is not None:
+                self.device.send_cmd_sync(
+                    Command.WriteRegister,
+                    bytes([0x63, 0x03, old_rx_mode]),
+                    timeout=0.5,
+                )
+            self._restart_iso14443a_field()
+
+        readback = self.hf_mf_gdm_read(0xE0, mode="wupa", key=key)
+        if readback != data:
+            raise RuntimeError("GDM configuration write verification did not match")
+        return readback
+
+    def hf_mf_gdm_set_uid(self, uid: bytes, key: bytes = bytes(6)) -> dict:
+        """Set a 4- or 7-byte UID and switch the GDM personalization mode."""
+        uid = bytes(uid)
+        if len(uid) not in (4, 7):
+            raise ValueError("GDM UID must be exactly 4 or 7 bytes")
+
+        original_config = self.hf_mf_gdm_read(0xE0, mode="wupa", key=key)
+        final_config = bytearray(original_config)
+        if len(uid) == 4:
+            # Standard single-size mode takes UID and BCC from public block 0.
+            final_config[9] = 0x00
+        elif final_config[9] not in (0x5A, 0xC3, 0xA5):
+            final_config[9] = 0x5A
+
+        # Keep the current personalization mode while opening the wakeup path.
+        # Switching modes before block 0 is ready can make anticollision BCC
+        # invalid and prevent WUPA-based verification/recovery.
+        temporary_config = bytearray(original_config)
+        temporary_config[:2] = b"\x7A\xFF"
+        wakeup_mode = "gdm" if temporary_config[2] == 0x85 else "gen1a"
+        enabled_temporary_wakeup = bytes(temporary_config) != original_config
+        if enabled_temporary_wakeup:
+            self._gdm_write_config_magic(bytes(temporary_config), key)
+
+        hidden_block = None
+        if len(uid) == 7:
+            bcc0 = 0x88 ^ uid[0] ^ uid[1] ^ uid[2]
+            bcc1 = uid[3] ^ uid[4] ^ uid[5] ^ uid[6]
+            hidden_block = (
+                b"\x88"
+                + uid[:3]
+                + bytes([bcc0, 0x04])
+                + uid[3:]
+                + bytes([bcc1, 0x08])
+                + bytes(4)
+            )
+            public_block = uid + b"\x88\x44" + bytes(7)
+        else:
+            bcc = uid[0] ^ uid[1] ^ uid[2] ^ uid[3]
+            public_block = uid + bytes([bcc, 0x08, 0x04, 0x00]) + bytes(8)
+
+        try:
+            if not self.hf_14a_scan():
+                raise RuntimeError("No tag found after enabling the GDM wakeup")
+            if hidden_block is not None:
+                self.hf_mf_gdm_write(0xA8, 0, hidden_block, wakeup_mode)
+                self._restart_iso14443a_field()
+
+            self.hf_mf_gdm_write(0xA0, 0, public_block, wakeup_mode)
+
+            if bytes(temporary_config) != bytes(final_config):
+                self._restart_iso14443a_field()
+                self.hf_mf_gdm_write(
+                    0xE1, 0, bytes(final_config), wakeup_mode
+                )
+        except Exception as error:
+            if enabled_temporary_wakeup:
+                raise RuntimeError(
+                    f"GDM UID update failed; temporary 7AFF recovery config was left enabled: {error}"
+                ) from error
+            raise
+
+        self._restart_iso14443a_field()
+        scan = self.hf_14a_scan()
+        if not scan or bytes(scan[0]["uid"]) != uid:
+            raise RuntimeError("Final GDM UID verification failed")
+        verified_config = self.hf_mf_gdm_read(0xE0, mode="wupa", key=key)
+        verified_public = self.hf_mf_gdm_read(0x30, 0, mode="wupa", key=key)
+        if verified_config != bytes(final_config) or verified_public != public_block:
+            raise RuntimeError("Final GDM UID data verification failed")
+        return {
+            "uid": uid,
+            "hidden_block": hidden_block,
+            "public_block": public_block,
+            "config": verified_config,
+        }
+
+    def hf_mf_gdm_write_public_magic(
+        self, block: int, data: bytes, key: bytes = bytes(6)
+    ) -> bytes:
+        """Write a public block on a magic-auth-only GDM card.
+
+        The authenticated 0x80 path can expose the configuration but cannot send
+        an encrypted A0 write through PN532 InCommunicateThru.  Temporarily open
+        the configured unencrypted wakeup path, perform the normal GDM write,
+        and restore the exact original configuration before returning.
+        """
+        if not 0 <= block <= 0xFF:
+            raise ValueError("GDM block number must be in range 0-255")
+        data = bytes(data)
+        if len(data) != 16:
+            raise ValueError("GDM writes require exactly 16 bytes")
+
+        original_config = self.hf_mf_gdm_read(0xE0, mode="wupa", key=key)
+        temporary_config = bytearray(original_config)
+        temporary_config[:2] = b"\x7A\xFF"
+        wakeup_mode = "gdm" if temporary_config[2] == 0x85 else "gen1a"
+        enabled_temporary_wakeup = bytes(temporary_config) != original_config
+        if enabled_temporary_wakeup:
+            self._gdm_write_config_magic(bytes(temporary_config), key)
+
+        try:
+            if not self.hf_14a_scan():
+                raise RuntimeError("No tag found after enabling the GDM wakeup")
+            self.hf_mf_gdm_write(0xA0, block, data, wakeup_mode)
+            if enabled_temporary_wakeup:
+                self._restart_iso14443a_field()
+                self.hf_mf_gdm_write(
+                    0xE1, 0, original_config, wakeup_mode
+                )
+        except Exception as error:
+            if enabled_temporary_wakeup:
+                raise RuntimeError(
+                    "GDM public block write failed; temporary 7AFF recovery "
+                    f"config was left enabled: {error}"
+                ) from error
+            raise
+
+        self._restart_iso14443a_field()
+        readback = self.hf_mf_gdm_read(0x30, block, mode="wupa", key=key)
+        verified_config = self.hf_mf_gdm_read(0xE0, mode="wupa", key=key)
+        if readback != data:
+            raise RuntimeError("Final GDM public block verification did not match")
+        if verified_config != original_config:
+            raise RuntimeError("Final GDM configuration restoration did not match")
+        return readback
+
+    def _gdm_read_active(self, command: int, block: int, label: str) -> bytes:
+        response = bytes(
+            self.hf14a_raw(
+                self._gdm_raw_options(False, True),
+                1000,
+                bytes([command, block]),
+            )
+            or b""
+        )
+        return self._require_iso14443a_crc(response, 16, label)
+
+    def hf_mf_gdm_read(
+        self,
+        command: int,
+        block: int = 0,
+        mode: str = "gdm",
+        key: bytes = bytes(6),
+    ) -> bytes:
+        """Read a public, hidden, or configuration block through a GDM backdoor."""
+        if command not in (0x30, 0x38, 0xE0):
+            raise ValueError("Unsupported GDM read command")
+        if not 0 <= block <= 0xFF:
+            raise ValueError("GDM block number must be in range 0-255")
+
+        if mode == "wupa":
+            try:
+                self._gdm_magic_auth(key)
+                return self._gdm_read_magic_active(command, block)
+            finally:
+                # Dropping the field clears the CIU Crypto1 state and leaves the
+                # tag ready for a normal scan or a different wakeup attempt.
+                self._restart_iso14443a_field()
+
+        try:
+            self._gdm_wakeup(mode)
+            return self._gdm_read_active(command, block, "GDM read")
+        finally:
+            self.device.halt()
+
+    def hf_mf_gdm_write(
+        self,
+        command: int,
+        block: int,
+        data: bytes,
+        mode: str = "gdm",
+    ) -> bytes:
+        """Write one GDM block and require an exact readback before succeeding."""
+        read_commands = {0xA0: 0x30, 0xA8: 0x38, 0xE1: 0xE0}
+        if command not in read_commands:
+            raise ValueError("Unsupported GDM write command")
+        if not 0 <= block <= 0xFF:
+            raise ValueError("GDM block number must be in range 0-255")
+        data = bytes(data)
+        if len(data) != 16:
+            raise ValueError("GDM writes require exactly 16 bytes")
+
+        try:
+            self._gdm_wakeup(mode)
+            response = self.hf14a_raw(
+                self._gdm_raw_options(False, True),
+                1000,
+                bytes([command, block]),
+            )
+            if not self._gdm_acknowledged(response):
+                raise RuntimeError(
+                    f"Tag did not acknowledge GDM write command {command:02X}{block:02X}"
+                )
+
+            response = self.hf14a_raw(
+                self._gdm_raw_options(False, True), 1000, data
+            )
+            if not self._gdm_acknowledged(response):
+                raise RuntimeError("Tag did not acknowledge GDM write data")
+
+            readback = self._gdm_read_active(
+                read_commands[command], block, "GDM write verification"
+            )
+            if readback != data:
+                raise RuntimeError("GDM write verification did not match requested data")
+            return readback
+        finally:
+            self.device.halt()
 
     def selectTag(self):
         tag_info = {}

@@ -2558,6 +2558,309 @@ class HfMfRdbl(MF1AuthArgsUnit):
                 print(f"Block {block} Failed to read")
 
 
+def _add_gdm_wakeup_args(
+    parser: ArgumentParserNoExit, allow_magic_auth: bool = False
+) -> None:
+    wakeup = parser.add_mutually_exclusive_group()
+    wakeup.add_argument(
+        "--gdm",
+        action="store_true",
+        help=(
+            "Force GDM alternate wakeup 20(7)/23"
+            if allow_magic_auth
+            else "Use GDM alternate wakeup 20(7)/23 (default)"
+        ),
+    )
+    wakeup.add_argument(
+        "--gen1a",
+        action="store_true",
+        help="Use Gen1a wakeup 40(7)/43",
+    )
+    if allow_magic_auth:
+        wakeup.add_argument(
+            "--wupa",
+            action="store_true",
+            help="Select the tag and use GDM 0x80 hardware Crypto1 authentication",
+        )
+        parser.add_argument(
+            "-k",
+            "--key",
+            default="000000000000",
+            metavar="<hex>",
+            help="6-byte GDM magic-auth key (default 000000000000)",
+        )
+
+
+def _gdm_mode(args: argparse.Namespace) -> str:
+    if getattr(args, "wupa", False):
+        return "wupa"
+    return "gen1a" if getattr(args, "gen1a", False) else "gdm"
+
+
+def _gdm_key(args: argparse.Namespace) -> bytes:
+    key = getattr(args, "key", "000000000000")
+    if not re.fullmatch(r"[a-fA-F0-9]{12}", key or ""):
+        raise ArgsParserError("GDM magic-auth key must include exactly 12 HEX symbols")
+    return bytes.fromhex(key)
+
+
+def _gdm_read_with_fallback(
+    cmd: pn532_cmd.Pn532CMD,
+    command: int,
+    block: int,
+    args: argparse.Namespace,
+) -> tuple[bytes, str]:
+    explicit_mode = any(
+        getattr(args, name, False) for name in ("gdm", "gen1a", "wupa")
+    )
+    modes = [_gdm_mode(args)] if explicit_mode else ["wupa", "gdm", "gen1a"]
+    failures = []
+    for mode in modes:
+        try:
+            return cmd.hf_mf_gdm_read(
+                command, block, mode, key=_gdm_key(args)
+            ), mode
+        except RuntimeError as error:
+            failures.append(f"{mode}: {error}")
+    raise RuntimeError("; ".join(failures))
+
+
+def _gdm_data(value: str) -> bytes:
+    if not re.fullmatch(r"[a-fA-F0-9]{32}", value or ""):
+        raise ArgsParserError("data must include exactly 32 HEX symbols")
+    return bytes.fromhex(value)
+
+
+def _print_gdm_failure(error: RuntimeError) -> None:
+    print(f"{CR}GDM operation failed: {error}{C0}")
+
+
+def _print_gdm_config(config: bytes) -> None:
+    parsed = pn532_cmd.Pn532CMD.parse_gdm_config(config)
+    print(f"Config: {CG}{config.hex().upper()}{C0}")
+    print(
+        " Magic wakeup: "
+        + ("enabled" if parsed["magic_wakeup_enabled"] else "disabled")
+        + (" (config access enabled)" if parsed["config_access_enabled"] else "")
+    )
+    print(f" Wakeup style: {parsed['wakeup_style']} | SAK: {parsed['sak']:02X}")
+    print(
+        " CUID: {cuid} | Personalization: {pers} | Shadow: {shadow}".format(
+            cuid="enabled" if parsed["cuid"] else "disabled",
+            pers=parsed["personalization_name"],
+            shadow="enabled" if parsed["shadow"] else "disabled",
+        )
+    )
+    print(
+        " Magic auth: {auth} | Static encrypted nonce: {nonce} | Signature: {sig}".format(
+            auth="enabled" if parsed["magic_auth"] else "disabled",
+            nonce="enabled" if parsed["static_encrypted_nonce"] else "disabled",
+            sig="enabled" if parsed["signature_sector"] else "disabled",
+        )
+    )
+
+
+@hf_mf.command("gdmparsecfg")
+class HfMfGdmParseCfg(BaseCLIUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Parse a 16-byte GDM/USCUID configuration block"
+        parser.add_argument("-d", "--data", required=True, metavar="<hex>")
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        _print_gdm_config(_gdm_data(args.data))
+
+
+@hf_mf.command("gdmgetcfg")
+class HfMfGdmGetCfg(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = (
+            "Read and parse the GDM/USCUID configuration block; "
+            "auto-detect access mode when none is specified"
+        )
+        _add_gdm_wakeup_args(parser, allow_magic_auth=True)
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        try:
+            config, mode = _gdm_read_with_fallback(self.cmd, 0xE0, 0, args)
+        except RuntimeError as error:
+            _print_gdm_failure(error)
+            return
+        print(f"Access mode: {CG}{mode}{C0}")
+        _print_gdm_config(config)
+
+
+@hf_mf.command("gdmcfg")
+class HfMfGdmCfg(HfMfGdmGetCfg):
+    """Compatibility alias used by older Proxmark3 documentation."""
+
+    pass
+
+
+class HfMfGdmReadBlockBase(DeviceRequiredUnit):
+    hidden = False
+
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = (
+            "Read a hidden GDM block; auto-detect access mode"
+            if self.hidden
+            else "Read a public GDM block; auto-detect access mode"
+        )
+        parser.add_argument("--blk", type=int, required=True, metavar="<dec>")
+        _add_gdm_wakeup_args(parser, allow_magic_auth=True)
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if not 0 <= args.blk <= 255:
+            raise ArgsParserError("block must be in range 0-255")
+        command = 0x38 if self.hidden else 0x30
+        try:
+            data, mode = _gdm_read_with_fallback(
+                self.cmd, command, args.blk, args
+            )
+        except RuntimeError as error:
+            _print_gdm_failure(error)
+            return
+        label = "Hidden block" if self.hidden else "Block"
+        print(f"{label} {args.blk}: {data.hex().upper()} ({mode})")
+
+
+@hf_mf.command("gdmgetblk")
+class HfMfGdmGetBlk(HfMfGdmReadBlockBase):
+    pass
+
+
+@hf_mf.command("gdmgethidblk")
+class HfMfGdmGetHidBlk(HfMfGdmReadBlockBase):
+    hidden = True
+
+
+class HfMfGdmWriteBlockBase(DeviceRequiredUnit):
+    command = 0xA0
+    hidden = False
+
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = (
+            "Write and verify a hidden GDM block"
+            if self.hidden
+            else "Write and verify a public GDM block"
+        )
+        parser.add_argument("--blk", type=int, required=True, metavar="<dec>")
+        parser.add_argument("-d", "--data", required=True, metavar="<hex>")
+        parser.add_argument(
+            "--force", action="store_true", help="Allow dangerous block writes"
+        )
+        _add_gdm_wakeup_args(parser, allow_magic_auth=not self.hidden)
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if not 0 <= args.blk <= 255:
+            raise ArgsParserError("block must be in range 0-255")
+        if self.hidden and not args.force:
+            raise ArgsParserError("hidden block writes require --force")
+        dangerous_public_block = args.blk == 0 or is_trailer_block(args.blk)
+        if not self.hidden and dangerous_public_block and not args.force:
+            raise ArgsParserError("block 0 and sector trailer writes require --force")
+        data = _gdm_data(args.data)
+        try:
+            if not self.hidden and _gdm_mode(args) == "wupa":
+                self.cmd.hf_mf_gdm_write_public_magic(
+                    args.blk, data, key=_gdm_key(args)
+                )
+            else:
+                self.cmd.hf_mf_gdm_write(
+                    self.command, args.blk, data, _gdm_mode(args)
+                )
+        except RuntimeError as error:
+            _print_gdm_failure(error)
+            return
+        print(f"{CG}Write verified for block {args.blk}.{C0}")
+
+
+@hf_mf.command("gdmsetblk")
+class HfMfGdmSetBlk(HfMfGdmWriteBlockBase):
+    pass
+
+
+@hf_mf.command("gdmsethidblk")
+class HfMfGdmSetHidBlk(HfMfGdmWriteBlockBase):
+    command = 0xA8
+    hidden = True
+
+
+@hf_mf.command("gdmsetcfg")
+class HfMfGdmSetCfg(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Write and verify the 16-byte GDM configuration block"
+        parser.add_argument("-d", "--data", required=True, metavar="<hex>")
+        parser.add_argument(
+            "--force", action="store_true", help="Confirm configuration write risk"
+        )
+        _add_gdm_wakeup_args(parser)
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if not args.force:
+            raise ArgsParserError("configuration writes require --force")
+        data = _gdm_data(args.data)
+        try:
+            self.cmd.hf_mf_gdm_write(0xE1, 0, data, _gdm_mode(args))
+        except RuntimeError as error:
+            _print_gdm_failure(error)
+            return
+        print(f"{CG}Configuration write verified.{C0}")
+        _print_gdm_config(data)
+
+
+@hf_mf.command("gdmsetuid")
+class HfMfGdmSetUid(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = (
+            "Set a 4- or 7-byte UID on a magic-auth-only GDM card and switch its "
+            "personalization mode; temporarily enables the configured magic wakeup"
+        )
+        parser.add_argument("-u", "--uid", required=True, metavar="<hex>")
+        parser.add_argument(
+            "-k",
+            "--key",
+            default="000000000000",
+            metavar="<hex>",
+            help="6-byte GDM magic-auth key (default 000000000000)",
+        )
+        parser.add_argument(
+            "--wupa",
+            action="store_true",
+            help="Use WUPA + 0x80 magic authentication (currently required)",
+        )
+        parser.add_argument(
+            "--force", action="store_true", help="Confirm UID and config writes"
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if not args.force:
+            raise ArgsParserError("GDM UID changes require --force")
+        if not re.fullmatch(r"(?:[a-fA-F0-9]{8}|[a-fA-F0-9]{14})", args.uid or ""):
+            raise ArgsParserError("GDM UID must include exactly 8 or 14 HEX symbols")
+        try:
+            result = self.cmd.hf_mf_gdm_set_uid(
+                bytes.fromhex(args.uid), key=_gdm_key(args)
+            )
+        except RuntimeError as error:
+            _print_gdm_failure(error)
+            return
+        print(f"{CG}GDM UID changed and verified: {result['uid'].hex().upper()}{C0}")
+        print(f"Public block 0: {result['public_block'].hex().upper()}")
+        print(f"Config restored: {result['config'].hex().upper()}")
+
+
 @hf_mf.command("wrbl")
 class HfMfWrbl(MF1WriteBlockArgsUnit):
     def on_exec(self, args: argparse.Namespace):

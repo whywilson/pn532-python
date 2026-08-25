@@ -50,6 +50,27 @@ pn532_cli_main.exe --debug
 3. `hf mf nestedattack --known-key <hex> --known-block <dec>` runs recursive static-nested recovery across sectors on PN532Killer.
 4. Legacy `hf mf nested ...` is kept as a compatibility alias and now dispatches to the built-in nestedattack pipeline.
 
+### GDM / USCUID workflow
+1. Read and parse the configuration with `hf mf gdmgetcfg`; `hf mf gdmcfg`
+   is kept as an alias for older Proxmark3 documentation.
+2. Read commands automatically try hardware `0x80` magic authentication, GDM
+   alternate wakeup `20(7)/23`, then Gen1a `40(7)/43`. Use `--wupa`, `--gdm`,
+   or `--gen1a` to force one mode; `--wupa -k <12hex>` overrides the default
+   all-zero GDM key.
+3. Read public or hidden blocks with `hf mf gdmgetblk --blk <dec>` and
+   `hf mf gdmgethidblk --blk <dec>`.
+4. Change a 4- or 7-byte UID on a magic-auth-only card with
+   `hf mf gdmsetuid -u <8-or-14hex> --wupa --force`. The command temporarily enables
+   the card's configured magic wakeup, writes and verifies both UID blocks, then
+   restores the original configuration.
+5. Write with `gdmsetblk`, `gdmsethidblk`, or `gdmsetcfg`. Dangerous locations
+   require `--force`, and every write is verified by an exact readback. For a
+   magic-auth-only card, use `hf mf gdmsetblk --blk <dec> -d <32hex> --wupa
+   --force`; it temporarily opens the wakeup path and restores the configuration.
+6. The PN532 CIU hardware performs non-standard `0x80` Crypto1 authentication
+   directly. Generic write commands use the unencrypted GDM/Gen1a wakeup paths;
+   `gdmsetuid` includes the authenticated configuration bridge needed by hard cards.
+
 ## Features
 ### PN532
 - [x] Read and write Mifare Classic Mini, 1K, 4K
@@ -57,6 +78,9 @@ pn532_cli_main.exe --debug
 - [x] Magic commands for Gen1a, Gen3, Gen4 UMC
 - [x] Send ISO14443A raw commands
 - [x] Recover invalid UID BCC on DirectWrite Type 2 tags (`hf mfu recover`)
+- [x] Read GDM/USCUID through `8000` Crypto1 magic auth, `20(7)/23`, or `40(7)/43`
+- [x] Write GDM/USCUID public blocks through magic auth or `20(7)/23` / `40(7)/43` wakeup
+- [x] Set 4- or 7-byte UID and personalization mode on magic-auth-only GDM cards (`hf mf gdmsetuid`)
 - [x] NTAG Emulate
 
 ### PN532Killer

@@ -115,6 +115,20 @@ class Pn532CLI:
                         "[Sniffer Helpers]",
                         ["sniffer"],
                     ),
+                    (
+                        "[GDM / USCUID]",
+                        [
+                            "gdmgetcfg",
+                            "gdmcfg",
+                            "gdmparsecfg",
+                            "gdmgetblk",
+                            "gdmgethidblk",
+                            "gdmsetuid",
+                            "gdmsetcfg",
+                            "gdmsetblk",
+                            "gdmsethidblk",
+                        ],
+                    ),
                 ]
                 children_by_name = {child.name: child for child in tree_node.children}
                 printed = set()

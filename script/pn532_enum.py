@@ -78,6 +78,14 @@ PN532Capabilities = [
     "HfMfNested",
     "HfMfMfoc",
     "HfMfNestedattack",
+    "HfMfGdmGetCfg",
+    "HfMfGdmCfg",
+    "HfMfGdmGetBlk",
+    "HfMfGdmGetHidBlk",
+    "HfMfGdmSetCfg",
+    "HfMfGdmSetBlk",
+    "HfMfGdmSetHidBlk",
+    "HfMfGdmSetUid",
 ]
 PN532KillerCapabilities = [
     "HWModeReader",
