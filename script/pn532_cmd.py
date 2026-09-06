@@ -35,6 +35,12 @@ class Pn532CMD:
     Pn532 cmd function
     """
 
+    HF15_GEN3_BLOCK_COUNT = 80
+    HF15_GEN3_UID_BLOCKS = (0x10, 0x11)
+    # Fixed activation/configuration value observed on Gen3 tags with
+    # independent UIDs. Clearing block 0x14 makes the tag stop inventorying.
+    HF15_GEN3_ACTIVATION = b"\xA5\x2B\x44\x2C\x21\xAE\x93\x00"
+
     def __init__(self, pn532: pn532_com.Pn532Com):
         """
         :param pn532: pn532 instance, @see pn532_device.Pn532
@@ -1744,6 +1750,73 @@ class Pn532CMD:
         resp2 = self.hf_15_raw(options = {"select_tag": 0, "append_crc": 1, "no_check_response": 1}, data = command2)
         # print(f"Set uid2 {uid.hex()}: {resp2.data.hex().upper()}")
         return True
+
+    def hf_15_check_gen3(self):
+        """Validate the known non-destructive Gen3 tag layout."""
+        info = self.hf_15_info()
+        if info is None:
+            return False, "could not read system information"
+        if info["block_size"] != self.HF15_GEN3_BLOCK_COUNT:
+            return False, (
+                f"expected {self.HF15_GEN3_BLOCK_COUNT} blocks, "
+                f"got {info['block_size']}"
+            )
+
+        activation_a = self.hf_15_read_block(0x14)
+        activation_b = self.hf_15_read_block(0x15)
+        if activation_a is None or activation_b is None:
+            return False, "could not read protected Gen3 blocks 20/21"
+        activation = bytes(activation_a) + bytes(activation_b)
+        if activation != self.HF15_GEN3_ACTIVATION:
+            return False, (
+                "Gen3 activation value mismatch: "
+                f"expected {self.HF15_GEN3_ACTIVATION.hex().upper()}, "
+                f"got {activation.hex().upper()}"
+            )
+        return True, None
+
+    def hf_15_set_gen3_uid(self, uid: bytes):
+        """Set the UID on an 80-block Gen3 Magic ISO15693 tag.
+
+        Gen3 tags expose the UID least-significant byte first in ordinary
+        ISO15693 blocks 0x10 and 0x11.  Use unaddressed commands because the
+        tag's UID changes as soon as either half is written.
+        """
+        if len(uid) != 8 or uid[0] != 0xE0:
+            return False
+
+        valid_gen3, _ = self.hf_15_check_gen3()
+        if not valid_gen3:
+            return False
+
+        blocks = (
+            (0x10, uid[4:][::-1]),
+            (0x11, uid[:4][::-1]),
+        )
+        for block, block_data in blocks:
+            command = b"\x02\x21" + bytes([block]) + block_data
+            resp = self.hf_15_raw(
+                options={
+                    "select_tag": 0,
+                    "append_crc": 1,
+                    "no_check_response": 0,
+                },
+                data=command,
+            )
+            if resp is None or resp.status != Status.SUCCESS:
+                return False
+
+        tags = self.hf_15_scan()
+        if not tags:
+            return False
+        expected_uid = uid.hex().lower()
+        uid_ok = any(tag.get("uid", "").lower() == expected_uid for tag in tags)
+        if not uid_ok:
+            return False
+
+        # UID writes must never alter the activation/configuration blocks.
+        valid_gen3, _ = self.hf_15_check_gen3()
+        return valid_gen3
 
     def hf_15_set_gen2_config(self, size: int, afi: int, dsfid: int, ic_reference: int):
         # 02e00946 00 00 00 00: last 2 byte is afi and dsfid
