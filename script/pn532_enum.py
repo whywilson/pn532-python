@@ -53,6 +53,7 @@ PN532Capabilities = [
     "HWRaw",
     "HF14AScan",
     "HF14ARaw",
+    "HfMfInfo",
     "HfMfSetUid",
     "HfMfRdbl",
     "HfMfWrbl",

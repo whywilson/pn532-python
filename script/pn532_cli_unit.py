@@ -1231,6 +1231,8 @@ class HF15Info(DeviceRequiredUnit):
             print(f"DSFID: 0x{resp['dsfid']:02X}")
             print(f"IC Reference: 0x{resp['ic_reference']:02X}")
             print(f"Block size: {resp['block_size']}")
+            generation = self.cmd.hf_15_get_generation(resp)
+            print(f"Tag generation: {generation or 'Unknown'}")
         else:
             print("Get ISO15693 tag information failed")
 
@@ -2696,6 +2698,36 @@ def _print_gdm_config(config: bytes) -> None:
             sig="enabled" if parsed["signature_sector"] else "disabled",
         )
     )
+
+
+@hf_mf.command("info")
+class HfMfInfo(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = (
+            "Read-only identification of MIFARE Classic and common magic-card generations"
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        result = self.cmd.hf_mf_info()
+        if result is None:
+            print(f"{CR}No ISO14443-A tag found.{C0}")
+            return
+        tag = result["tag"]
+        print(f"UID: {CG}{bytes(tag['uid']).hex().upper()}{C0}")
+        print(f"ATQA: {bytes(tag['atqa']).hex().upper()}")
+        print(f"SAK: {bytes(tag['sak']).hex().upper()}")
+        ats = bytes(tag.get("ats", b""))
+        if ats:
+            print(f"ATS: {ats.hex().upper()}")
+        print(f"Card type: {CG}{result['type']}{C0}")
+        for capability in result["capabilities"]:
+            print(f" Capability: {capability}")
+        if result["config"] is not None:
+            _print_gdm_config(result["config"])
+        for limitation in result["limitations"]:
+            print(f" {CY}Note: {limitation}{C0}")
 
 
 @hf_mf.command("gdmparsecfg")

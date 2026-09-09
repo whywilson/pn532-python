@@ -689,6 +689,15 @@ class Pn532CMD:
             *((0x6339, value) for value in auth_payload),
             (0x6331, 0x0E),  # CommandReg: MFAuthent
         ]
+        if self.device.get_device_name() == "PN532Killer":
+            nonce = self._gdm_magic_auth_nonce_active()
+            detail = nonce.hex().upper() if nonce is not None else "no nonce"
+            raise RuntimeError(
+                "GDM magic-auth tag detected, but PN532Killer firmware does not "
+                "expose authenticated 0x80 Crypto1 data exchange "
+                f"({detail}); use a GDM/Gen1a wakeup-enabled card or PN532"
+            )
+
         write_data = b"".join(
             bytes([(address >> 8) & 0xFF, address & 0xFF, value])
             for address, value in register_writes
@@ -718,6 +727,238 @@ class Pn532CMD:
 
         detail = registers.hex().upper() or "no status"
         raise RuntimeError(f"GDM 0x80 magic authentication failed ({detail})")
+
+    def _gdm_magic_auth_nonce_active(self) -> Union[bytes, None]:
+        """Probe 0x80 authentication after selection without completing Crypto1."""
+        command = b"\x80\x00"
+        response = self.device.send_cmd_sync(
+            Command.InCommunicateThru,
+            command + crc16A(command),
+            timeout=0.5,
+        )
+        if response.status == Status.HF_TAG_OK and len(response.data) == 4:
+            return bytes(response.data)
+        return None
+
+    def hf_mf_gdm_probe_magic_auth(self) -> Union[bytes, None]:
+        """Select a tag and non-destructively test for the GDM 0x80 nonce."""
+        try:
+            if not self.hf_14a_scan():
+                return None
+            return self._gdm_magic_auth_nonce_active()
+        finally:
+            self._restart_iso14443a_field()
+
+    def _probe_gdm_wakeup_config(self, mode: str) -> Union[bytes, None]:
+        """Return a GDM config if an unencrypted wakeup exposes E0."""
+        try:
+            self._gdm_wakeup(mode)
+            return self._gdm_read_active(0xE0, 0, "GDM info probe")
+        except RuntimeError:
+            return None
+        finally:
+            self.device.halt()
+
+    def _select_iso14443a_raw(self, uid: bytes) -> bool:
+        """Select a known UID through transparent raw anticollision."""
+        uid = bytes(uid)
+        if len(uid) == 4:
+            cascade_parts = [(0x93, uid)]
+        elif len(uid) == 7:
+            cascade_parts = [(0x93, b"\x88" + uid[:3]), (0x95, uid[3:])]
+        elif len(uid) == 10:
+            cascade_parts = [
+                (0x93, b"\x88" + uid[:3]),
+                (0x95, b"\x88" + uid[3:6]),
+                (0x97, uid[6:]),
+            ]
+        else:
+            return False
+
+        try:
+            wupa = bytes(
+                self.hf14a_raw(
+                    self._gdm_raw_options(True, False),
+                    500,
+                    b"\x52",
+                    bitlen=7,
+                )
+                or b""
+            )
+            valid_wupa = len(wupa) == 2
+            if self.device.get_device_name() == "PN532Killer":
+                # Killer represents a two-byte response to a 7-bit command as
+                # the first response byte followed by bit-frame metadata 01 02.
+                valid_wupa = len(wupa) == 3 and wupa[1:] == b"\x01\x02"
+            if not valid_wupa:
+                return False
+
+            for index, (level, uid_part) in enumerate(cascade_parts):
+                anticollision = bytes(
+                    self.hf14a_raw(
+                        self._gdm_raw_options(False, False),
+                        500,
+                        bytes([level, 0x20]),
+                    )
+                    or b""
+                )
+                bcc = 0
+                for value in uid_part:
+                    bcc ^= value
+                expected = uid_part + bytes([bcc])
+                if anticollision != expected:
+                    return False
+
+                select_response = bytes(
+                    self.hf14a_raw(
+                        self._gdm_raw_options(False, True),
+                        500,
+                        bytes([level, 0x70]) + expected,
+                    )
+                    or b""
+                )
+                sak = self._require_iso14443a_crc(
+                    select_response, 1, "ISO14443-A raw select"
+                )[0]
+                is_last = index == len(cascade_parts) - 1
+                if bool(sak & 0x04) == is_last:
+                    return False
+            return True
+        except RuntimeError:
+            return False
+
+    def _probe_gen4_gtu(self) -> bool:
+        try:
+            scan = self.hf_14a_scan()
+            if not scan or not self._select_iso14443a_raw(scan[0]["uid"]):
+                return False
+            options = self._gdm_raw_options(False, True)
+            response = bytes(
+                self.hf14a_raw(
+                    options, 500, bytes.fromhex("CF00000000C6")
+                )
+                or b""
+            )
+            return len(response) >= 30
+        finally:
+            self._restart_iso14443a_field()
+
+    def _probe_gen3_direct_read(self) -> bool:
+        try:
+            scan = self.hf_14a_scan()
+            if not scan or not self._select_iso14443a_raw(scan[0]["uid"]):
+                return False
+            response = bytes(
+                self.hf14a_raw(
+                    self._gdm_raw_options(False, True),
+                    500,
+                    b"\x30\x00",
+                )
+                or b""
+            )
+            try:
+                self._require_iso14443a_crc(
+                    response, 16, "Gen3 unauthenticated block 0 read"
+                )
+                return True
+            except RuntimeError:
+                return False
+        finally:
+            self._restart_iso14443a_field()
+
+    def hf_mf_info(self) -> Union[dict, None]:
+        """Identify common MIFARE Classic magic-card generations read-only."""
+        scan = self.hf_14a_scan()
+        if not scan:
+            return None
+        tag = scan[0]
+        result = {
+            "tag": tag,
+            "type": "Normal or unknown MIFARE Classic",
+            "capabilities": [],
+            "config": None,
+            "limitations": [],
+        }
+
+        nonce = None
+        magic_config = None
+        if self.device.get_device_name() == "PN532":
+            try:
+                # A bare 80 00 nonce probe is not reliable through PN532
+                # InCommunicateThru.  Use the CIU MFAuthent path and prove GDM
+                # by reading its configuration instead.
+                magic_config = self.hf_mf_gdm_read(0xE0, mode="wupa")
+            except RuntimeError:
+                pass
+        else:
+            nonce = self.hf_mf_gdm_probe_magic_auth()
+        gdm20_config = self._probe_gdm_wakeup_config("gdm")
+        gdm40_config = self._probe_gdm_wakeup_config("gen1a")
+        if (
+            magic_config is not None
+            or nonce is not None
+            or gdm20_config is not None
+            or gdm40_config is not None
+        ):
+            result["type"] = "GDM / USCUID (Gen 4 GDM)"
+            if magic_config is not None:
+                result["capabilities"].append("0x80 magic authentication")
+            elif nonce is not None:
+                result["capabilities"].append(
+                    f"0x80 magic authentication (nonce {nonce.hex().upper()})"
+                )
+            if gdm20_config is not None:
+                result["capabilities"].append("GDM wakeup 20(7)/23")
+            if gdm40_config is not None:
+                result["capabilities"].append("Gen1a wakeup 40(7)/43")
+            result["config"] = magic_config or gdm20_config or gdm40_config
+            if (
+                result["config"] is None
+                and nonce is not None
+                and self.device.get_device_name() == "PN532Killer"
+            ):
+                result["limitations"].append(
+                    "PN532Killer firmware can detect GDM 0x80 authentication but "
+                    "cannot complete its authenticated data exchange"
+                )
+            return result
+
+        if self._probe_gen4_gtu():
+            result["type"] = "Magic Gen4 GTU"
+            result["capabilities"].append("CF password/config command")
+            return result
+
+        if self._probe_gen3_direct_read():
+            result["type"] = "Magic Gen3"
+            result["capabilities"].append(
+                "unauthenticated block 0 read with valid CRC"
+            )
+            return result
+
+        # A 40/43 ACK without an E0 config response is the classic Gen1a path.
+        try:
+            self._gdm_wakeup("gen1a")
+            result["type"] = "Magic Gen1a"
+            result["capabilities"].append("Gen1a wakeup 40(7)/43")
+            return result
+        except RuntimeError:
+            pass
+        finally:
+            self.device.halt()
+
+        known_gen2_ats = (
+            bytes.fromhex("0978009102DABC1910"),
+            bytes.fromhex("0D780071028849A13020150608563D"),
+        )
+        ats = bytes(tag.get("ats", b""))
+        if any(ats.startswith(pattern) for pattern in known_gen2_ats):
+            result["type"] = "Magic Gen2 / CUID"
+            result["capabilities"].append("known Gen2 ATS fingerprint")
+        else:
+            result["limitations"].append(
+                "Generic Gen2/CUID cannot be proven read-only without a known ATS fingerprint"
+            )
+        return result
 
     def _gdm_read_magic_active(self, command: int, block: int) -> bytes:
         # InListPassiveTarget configured hardware CRC and _gdm_magic_auth enabled
@@ -1738,7 +1979,21 @@ class Pn532CMD:
         return resp
 
     def hf_15_set_gen1_uid(self, uid: bytes, block_size: int):
-        return self.hf_15_write_block(block_size, uid[4:][::-1]) and self.hf_15_write_block(block_size + 1, uid[:4][::-1])
+        if not self.hf_15_write_block(block_size, uid[4:][::-1]):
+            return False
+        if not self.hf_15_write_block(block_size + 1, uid[:4][::-1]):
+            return False
+
+        # Gen1 applies its hidden UID blocks after the tag is power-cycled.
+        # Restart the RF field and verify the inventory UID before reporting
+        # success to the CLI.
+        self._restart_iso14443a_field()
+        tags = self.hf_15_scan()
+        expected_uid = bytes(uid).hex().lower()
+        return bool(
+            tags
+            and any(tag.get("uid", "").lower() == expected_uid for tag in tags)
+        )
 
     def hf_15_set_gen2_uid(self, uid: bytes):
         # 02e0094044556677 44556677 is the last 4 bytes of uid
@@ -1751,9 +2006,10 @@ class Pn532CMD:
         # print(f"Set uid2 {uid.hex()}: {resp2.data.hex().upper()}")
         return True
 
-    def hf_15_check_gen3(self):
+    def hf_15_check_gen3(self, info=None):
         """Validate the known non-destructive Gen3 tag layout."""
-        info = self.hf_15_info()
+        if info is None:
+            info = self.hf_15_info()
         if info is None:
             return False, "could not read system information"
         if info["block_size"] != self.HF15_GEN3_BLOCK_COUNT:
@@ -1774,6 +2030,40 @@ class Pn532CMD:
                 f"got {activation.hex().upper()}"
             )
         return True, None
+
+    def hf_15_get_generation(self, info=None):
+        """Identify supported Magic ISO15693 generations without writing the tag."""
+        if info is None:
+            info = self.hf_15_info()
+        if info is None:
+            return None
+
+        valid_gen3, _ = self.hf_15_check_gen3(info)
+        if valid_gen3:
+            return "Gen3"
+
+        # The common Gen1 Magic ISO15693 layout reports 28 user blocks and IC
+        # reference 0x01.  Its two UID blocks are write-only on some revisions,
+        # so they cannot be relied on as the sole read-only fingerprint.
+        if info["block_size"] == 28 and info.get("ic_reference") == 0x01:
+            return "Gen1"
+
+        # Gen1 stores its writable UID in two readable blocks immediately after
+        # the advertised user-memory range on revisions where those blocks can
+        # be read.  Keep this as a secondary fingerprint for other capacities.
+        block_count = info["block_size"]
+        uid_low = self.hf_15_read_block(block_count)
+        uid_high = self.hf_15_read_block(block_count + 1)
+        if uid_low is not None and uid_high is not None:
+            hidden_uid = bytes(uid_high)[::-1] + bytes(uid_low)[::-1]
+            if hidden_uid == bytes(info["uid"]):
+                return "Gen1"
+
+        # The supported Gen2 format has no known read-only signature.  Once the
+        # positive Gen1 and Gen3 layouts have been excluded, report Gen2 as the
+        # remaining supported generation rather than issuing a destructive
+        # proprietary configuration command.
+        return "Gen2"
 
     def hf_15_set_gen3_uid(self, uid: bytes):
         """Set the UID on an 80-block Gen3 Magic ISO15693 tag.

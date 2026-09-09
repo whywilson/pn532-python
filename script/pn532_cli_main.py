@@ -89,7 +89,7 @@ class Pn532CLI:
                     ),
                     (
                         "[Read/View]",
-                        ["rdbl", "cview", "dump"],
+                        ["info", "rdbl", "cview", "dump"],
                     ),
                     (
                         "[Cracking & Key Recovery]",
